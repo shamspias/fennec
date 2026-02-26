@@ -1,0 +1,1 @@
+skills/fennec/SKILL.md
