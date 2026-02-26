@@ -1,0 +1,30 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+fennec
+
+# Test binaries and coverage profiles
+*.test
+*.out
+coverage.txt
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Go workspace file
+go.work
+go.work.sum
+
+# IDEs and OS-specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
