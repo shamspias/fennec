@@ -5,11 +5,8 @@ import (
 	"math"
 )
 
-// Sharpen applies adaptive unsharp mask sharpening after resize.
-// This compensates for the slight softening that occurs during downscaling,
-// making the compressed result look crisper without increasing file size much.
-//
-// The strength parameter should be 0.0-1.0 (0.3 is a good default).
+// Sharpen applies adaptive unsharp mask sharpening.
+// The strength parameter should be 0.0–1.0 (0.3 is a good default).
 func Sharpen(img *image.NRGBA, strength float64) *image.NRGBA {
 	if strength <= 0 {
 		return img
@@ -24,11 +21,9 @@ func Sharpen(img *image.NRGBA, strength float64) *image.NRGBA {
 		return img
 	}
 
-	// Use a small Gaussian blur as the low-pass filter.
 	blurred := gaussianBlur3x3(img)
-
 	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
-	amount := 1.0 + strength*1.5 // Unsharp mask amount.
+	amount := 1.0 + strength*1.5
 
 	parallelDo(0, h, func(y int) {
 		for x := 0; x < w; x++ {
@@ -39,11 +34,10 @@ func Sharpen(img *image.NRGBA, strength float64) *image.NRGBA {
 			for c := 0; c < 3; c++ {
 				orig := float64(img.Pix[srcOff+c])
 				blur := float64(blurred.Pix[blurOff+c])
-				// Unsharp mask: result = original + amount * (original - blurred)
 				val := orig + amount*(orig-blur)
 				dst.Pix[dstOff+c] = clampF(val)
 			}
-			dst.Pix[dstOff+3] = img.Pix[srcOff+3] // Preserve alpha.
+			dst.Pix[dstOff+3] = img.Pix[srcOff+3]
 		}
 	})
 
@@ -51,8 +45,7 @@ func Sharpen(img *image.NRGBA, strength float64) *image.NRGBA {
 }
 
 // AdaptiveSharpen applies sharpening only to edge regions, leaving smooth
-// areas untouched. This prevents noise amplification in smooth gradients
-// while crisping up important details.
+// areas untouched to prevent noise amplification.
 func AdaptiveSharpen(img *image.NRGBA, strength float64) *image.NRGBA {
 	if strength <= 0 {
 		return img
@@ -71,14 +64,13 @@ func AdaptiveSharpen(img *image.NRGBA, strength float64) *image.NRGBA {
 	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
 	amount := 1.0 + strength*2.0
 
+	// Copy the entire source first (handles borders).
+	copy(dst.Pix, img.Pix)
+
 	parallelDo(1, h-1, func(y int) {
 		for x := 1; x < w-1; x++ {
 			srcOff := y*img.Stride + x*4
-
-			// Compute local edge strength using luminance gradient.
 			edgeStr := localEdgeStrength(img, x, y)
-
-			// Scale sharpening by edge strength.
 			localAmount := amount * edgeStr
 
 			blurOff := y*blurred.Stride + x*4
@@ -94,24 +86,10 @@ func AdaptiveSharpen(img *image.NRGBA, strength float64) *image.NRGBA {
 		}
 	})
 
-	// Copy border pixels.
-	for x := 0; x < w; x++ {
-		copy(dst.Pix[x*4:x*4+4], img.Pix[x*4:x*4+4])
-		lastRow := (h - 1) * img.Stride
-		copy(dst.Pix[lastRow+x*4:lastRow+x*4+4], img.Pix[lastRow+x*4:lastRow+x*4+4])
-	}
-	for y := 0; y < h; y++ {
-		off := y * img.Stride
-		copy(dst.Pix[off:off+4], img.Pix[off:off+4])
-		lastCol := off + (w-1)*4
-		copy(dst.Pix[lastCol:lastCol+4], img.Pix[lastCol:lastCol+4])
-	}
-
 	return dst
 }
 
-// localEdgeStrength computes the edge strength at a pixel using Sobel gradients.
-// Returns a value between 0 (smooth) and 1 (strong edge).
+// localEdgeStrength computes edge strength at a pixel using Sobel gradients.
 func localEdgeStrength(img *image.NRGBA, x, y int) float64 {
 	getLum := func(px, py int) float64 {
 		off := py*img.Stride + px*4
@@ -126,8 +104,6 @@ func localEdgeStrength(img *image.NRGBA, x, y int) float64 {
 		getLum(x-1, y+1) + 2*getLum(x, y+1) + getLum(x+1, y+1)
 
 	mag := math.Sqrt(gx*gx + gy*gy)
-
-	// Normalize to 0-1 range. Max Sobel magnitude for 8-bit is ~1443.
 	normalized := mag / 400.0
 	if normalized > 1 {
 		normalized = 1
@@ -136,37 +112,29 @@ func localEdgeStrength(img *image.NRGBA, x, y int) float64 {
 }
 
 // gaussianBlur3x3 applies a fast 3x3 Gaussian blur.
-// Kernel: [1 2 1; 2 4 2; 1 2 1] / 16
 func gaussianBlur3x3(img *image.NRGBA) *image.NRGBA {
 	w := img.Bounds().Dx()
 	h := img.Bounds().Dy()
 	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
-
-	// Copy border pixels as-is.
 	copy(dst.Pix, img.Pix)
 
 	parallelDo(1, h-1, func(y int) {
 		for x := 1; x < w-1; x++ {
 			for c := 0; c < 4; c++ {
 				var sum float64
-				// Row above.
 				sum += float64(img.Pix[(y-1)*img.Stride+(x-1)*4+c]) * 1
 				sum += float64(img.Pix[(y-1)*img.Stride+(x)*4+c]) * 2
 				sum += float64(img.Pix[(y-1)*img.Stride+(x+1)*4+c]) * 1
-				// Current row.
 				sum += float64(img.Pix[(y)*img.Stride+(x-1)*4+c]) * 2
 				sum += float64(img.Pix[(y)*img.Stride+(x)*4+c]) * 4
 				sum += float64(img.Pix[(y)*img.Stride+(x+1)*4+c]) * 2
-				// Row below.
 				sum += float64(img.Pix[(y+1)*img.Stride+(x-1)*4+c]) * 1
 				sum += float64(img.Pix[(y+1)*img.Stride+(x)*4+c]) * 2
 				sum += float64(img.Pix[(y+1)*img.Stride+(x+1)*4+c]) * 1
-
 				dst.Pix[y*dst.Stride+x*4+c] = clampF(sum / 16.0)
 			}
 		}
 	})
-
 	return dst
 }
 
@@ -181,7 +149,6 @@ func GaussianBlur(img *image.NRGBA, sigma float64) *image.NRGBA {
 	h := img.Bounds().Dy()
 	radius := int(math.Ceil(sigma * 3))
 
-	// Generate 1D kernel.
 	kernelSize := radius*2 + 1
 	kernel := make([]float64, kernelSize)
 	var sum float64
