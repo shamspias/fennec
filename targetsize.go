@@ -2,6 +2,7 @@ package fennec
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/color"
 	"image/png"
@@ -9,41 +10,19 @@ import (
 	"sort"
 )
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Target Size Engine
-//
-// Finds the best way to hit a target file size while preserving maximum quality.
-// Strategies are tried in order of quality preservation:
-//
-//  1. JPEG quality search    — binary search Q1–Q100 (lossy, highest quality)
-//  2. Color quantization     — median-cut to ≤256 colors → indexed PNG (~75% smaller)
-//  3. Combined quality+scale — JPEG quality search + modest downscale
-//  4. Scale search           — binary search on scale factor (last resort)
-// ──────────────────────────────────────────────────────────────────────────────
-
-// minJPEGQuality is the lowest JPEG quality we'll accept at full resolution.
-// Below this, blocking artifacts become severe regardless of SSIM score.
-// We prefer downscaling over going below this floor.
 const minJPEGQuality = 20
 
-// sizeResult holds the output of a target-size strategy.
 type sizeResult struct {
 	data    []byte
 	format  Format
-	quality int // JPEG quality (0 if PNG)
+	quality int
 	ssim    float64
 	finalW  int
 	finalH  int
 	img     *image.NRGBA
 }
 
-// hitTargetSize tries ALL strategies to reach targetBytes, then picks the
-// result with the highest SSIM that fits under the target.
-//
-// Key insight: a 1200px image at Q=60 looks FAR better than a 2800px image
-// at Q=2, even though both might report similar SSIM. We enforce a quality
-// floor and always compare all options.
-func hitTargetSize(original *image.NRGBA, targetBytes int, opts Options) (*sizeResult, error) {
+func hitTargetSize(ctx context.Context, original *image.NRGBA, targetBytes int, opts Options) (*sizeResult, error) {
 	w := original.Bounds().Dx()
 	h := original.Bounds().Dy()
 
@@ -51,39 +30,49 @@ func hitTargetSize(original *image.NRGBA, targetBytes int, opts Options) (*sizeR
 	wantJPEG := opts.Format == JPEG
 	canUseJPEG := !wantPNG && isOpaque(original)
 
-	// Collect ALL candidate results — we'll pick the best at the end.
 	var candidates []*sizeResult
 
-	// ── Strategy 1: JPEG quality binary search (with quality floor) ─────
+	// Check context before each strategy.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Strategy 1: JPEG quality binary search.
 	if canUseJPEG || wantJPEG {
 		if r, err := jpegQualitySearch(original, targetBytes); err == nil && r != nil {
-			// Only accept if quality is above the floor.
-			// Below Q=20, blocking artifacts are severe.
 			if r.quality >= minJPEGQuality {
 				candidates = append(candidates, r)
 			}
 		}
 	}
 
-	// ── Strategy 2: Color quantization → indexed PNG ────────────────────
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Strategy 2: Color quantization → indexed PNG.
 	if !wantJPEG {
 		if r, err := quantizeStrategy(original, targetBytes); err == nil && r != nil {
 			candidates = append(candidates, r)
 		}
 	}
 
-	// ── Strategy 3: JPEG quality + scale (the workhorse) ────────────────
-	// This is where the real magic happens for aggressive targets.
-	// We try many scale factors and find the sweet spot where the image
-	// is small enough that decent JPEG quality can hit the target.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Strategy 3: JPEG quality + scale.
 	if canUseJPEG || wantJPEG {
-		if r, err := jpegQualityScaleSearch(original, targetBytes); err == nil && r != nil {
+		if r, err := jpegQualityScaleSearch(ctx, original, targetBytes); err == nil && r != nil {
 			candidates = append(candidates, r)
 		}
 	}
 
-	// ── Strategy 4: Binary search on scale factor ───────────────────────
-	// Only run if no other strategy found a good result.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Strategy 4: Scale search (last resort).
 	if len(candidates) == 0 {
 		format := opts.Format
 		if format == Auto {
@@ -93,14 +82,12 @@ func hitTargetSize(original *image.NRGBA, targetBytes int, opts Options) (*sizeR
 				format = PNG
 			}
 		}
-		if r, err := scaleSearch(original, targetBytes, format); err == nil && r != nil {
+		if r, err := scaleSearch(ctx, original, targetBytes, format); err == nil && r != nil {
 			candidates = append(candidates, r)
 		}
 	}
 
-	// ── Pick the best candidate ─────────────────────────────────────────
 	if len(candidates) == 0 {
-		// Nothing fit. Fallback: smallest possible output.
 		var buf bytes.Buffer
 		if canUseJPEG || wantJPEG {
 			encodeJPEG(&buf, original, 1, false)
@@ -116,8 +103,6 @@ func hitTargetSize(original *image.NRGBA, targetBytes int, opts Options) (*sizeR
 		}, nil
 	}
 
-	// Among candidates that fit under target, pick highest SSIM.
-	// If none fit, pick the smallest (closest to target).
 	var best *sizeResult
 	for _, c := range candidates {
 		if best == nil || betterFit(c, best, targetBytes) {
@@ -128,8 +113,6 @@ func hitTargetSize(original *image.NRGBA, targetBytes int, opts Options) (*sizeR
 	return best, nil
 }
 
-// betterFit returns true if candidate is a better fit than current for the target.
-// Priorities: under-target > over-target, then higher SSIM, then higher JPEG quality.
 func betterFit(candidate, current *sizeResult, target int) bool {
 	cSize := int64(len(candidate.data))
 	bSize := int64(len(current.data))
@@ -138,33 +121,23 @@ func betterFit(candidate, current *sizeResult, target int) bool {
 	cUnder := cSize <= t
 	bUnder := bSize <= t
 
-	// Prefer under-target over over-target.
 	if cUnder && !bUnder {
 		return true
 	}
 	if !cUnder && bUnder {
 		return false
 	}
-
-	// Both under target: prefer higher SSIM.
 	if cUnder && bUnder {
 		if candidate.ssim != current.ssim {
 			return candidate.ssim > current.ssim
 		}
-		// Same SSIM: prefer higher JPEG quality (fewer artifacts).
 		return candidate.quality > current.quality
 	}
-
-	// Both over target: prefer smaller (closer to target).
 	return cSize < bSize
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Strategy 1: JPEG Quality Binary Search
-// ──────────────────────────────────────────────────────────────────────────────
+// ── Strategy 1 ──────────────────────────────────────────────────────────────
 
-// jpegQualitySearch finds the highest JPEG quality that fits under targetBytes.
-// If skipSSIM is true, skips the expensive SSIM computation (used during exploration).
 func jpegQualitySearch(src *image.NRGBA, targetBytes int) (*sizeResult, error) {
 	return jpegQualitySearchOpt(src, targetBytes, false)
 }
@@ -178,7 +151,6 @@ func jpegQualitySearchOpt(src *image.NRGBA, targetBytes int, skipSSIM bool) (*si
 	h := src.Bounds().Dy()
 	pixels := w * h
 
-	// Smart initial bounds based on bits per pixel.
 	targetBPP := float64(targetBytes*8) / float64(pixels)
 	lo, hi := 1, 100
 	if targetBPP < 0.5 {
@@ -227,15 +199,12 @@ func jpegQualitySearchOpt(src *image.NRGBA, targetBytes int, skipSSIM bool) (*si
 	}, nil
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Strategy 2: Color Quantization (Median-Cut) → Indexed PNG
-// ──────────────────────────────────────────────────────────────────────────────
+// ── Strategy 2 ──────────────────────────────────────────────────────────────
 
 func quantizeStrategy(src *image.NRGBA, targetBytes int) (*sizeResult, error) {
 	w := src.Bounds().Dx()
 	h := src.Bounds().Dy()
 
-	// Try palette sizes: 256, 128, 64, 32, 16.
 	for _, maxColors := range []int{256, 128, 64, 32, 16} {
 		palette := medianCut(src, maxColors)
 		indexed := applyPalette(src, palette)
@@ -247,7 +216,6 @@ func quantizeStrategy(src *image.NRGBA, targetBytes int) (*sizeResult, error) {
 		}
 
 		if int64(buf.Len()) <= int64(targetBytes) {
-			// Compute SSIM of quantized version.
 			quantizedNRGBA := palettedToNRGBA(indexed)
 			ssim := computeSSIMNRGBA(src, quantizedNRGBA)
 
@@ -261,19 +229,9 @@ func quantizeStrategy(src *image.NRGBA, targetBytes int) (*sizeResult, error) {
 	return nil, nil
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Strategy 3: JPEG Quality + Scale Binary Search
-//
-// This is the key strategy for aggressive targets. Instead of fixed scale
-// steps, we binary search for the optimal scale factor where JPEG quality
-// stays above the floor (Q≥20) while hitting the target size.
-//
-// For a 2816×1536 image at 100KB target:
-//   - Full res at Q=2 → horrible blocking (Strategy 1 rejects this)
-//   - 1200×655 at Q=55 → crisp and clean (this strategy finds it)
-// ──────────────────────────────────────────────────────────────────────────────
+// ── Strategy 3 ──────────────────────────────────────────────────────────────
 
-func jpegQualityScaleSearch(src *image.NRGBA, targetBytes int) (*sizeResult, error) {
+func jpegQualityScaleSearch(ctx context.Context, src *image.NRGBA, targetBytes int) (*sizeResult, error) {
 	origW := src.Bounds().Dx()
 	origH := src.Bounds().Dy()
 
@@ -284,12 +242,13 @@ func jpegQualityScaleSearch(src *image.NRGBA, targetBytes int) (*sizeResult, err
 	}
 	var bestCand *candidate
 
-	// Phase 1: Fast search using box downsample to find the right scale.
-	// Box downsample is ~10× faster than Lanczos but good enough for
-	// size estimation (JPEG file size correlates well across resize methods).
 	loScale, hiScale := 0.05, 1.0
 
 	for i := 0; i < 10; i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		midScale := (loScale + hiScale) / 2
 		newW := int(float64(origW) * midScale)
 		newH := int(float64(origH) * midScale)
@@ -299,7 +258,6 @@ func jpegQualityScaleSearch(src *image.NRGBA, targetBytes int) (*sizeResult, err
 		}
 
 		scaled := boxDownsample(src, newW, newH)
-
 		r, err := jpegQualitySearchFast(scaled, targetBytes)
 		if err != nil || r == nil {
 			hiScale = midScale
@@ -309,15 +267,15 @@ func jpegQualityScaleSearch(src *image.NRGBA, targetBytes int) (*sizeResult, err
 		if int64(len(r.data)) <= int64(targetBytes) && r.quality >= minJPEGQuality {
 			bestCand = &candidate{scale: midScale, quality: r.quality, size: len(r.data)}
 			loScale = midScale
-		} else if r.quality < minJPEGQuality {
-			hiScale = midScale
 		} else {
 			hiScale = midScale
 		}
 	}
 
-	// Also check round scales.
 	for _, scale := range []float64{0.75, 0.50, 0.375, 0.25} {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		newW := int(float64(origW) * scale)
 		newH := int(float64(origH) * scale)
 		if newW < 8 || newH < 8 {
@@ -340,12 +298,10 @@ func jpegQualityScaleSearch(src *image.NRGBA, targetBytes int) (*sizeResult, err
 		return nil, nil
 	}
 
-	// Phase 2: Use Lanczos for the final output at the winning scale.
 	finalW := int(float64(origW) * bestCand.scale)
 	finalH := int(float64(origH) * bestCand.scale)
 	finalScaled := lanczosResize(src, finalW, finalH)
 
-	// Re-search quality on the Lanczos output (size may differ slightly).
 	r, err := jpegQualitySearch(finalScaled, targetBytes)
 	if err != nil || r == nil {
 		return nil, nil
@@ -362,11 +318,9 @@ func jpegQualityScaleSearch(src *image.NRGBA, targetBytes int) (*sizeResult, err
 	return r, nil
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Strategy 4: Binary Search on Scale Factor
-// ──────────────────────────────────────────────────────────────────────────────
+// ── Strategy 4 ──────────────────────────────────────────────────────────────
 
-func scaleSearch(src *image.NRGBA, targetBytes int, format Format) (*sizeResult, error) {
+func scaleSearch(ctx context.Context, src *image.NRGBA, targetBytes int, format Format) (*sizeResult, error) {
 	origW := src.Bounds().Dx()
 	origH := src.Bounds().Dy()
 
@@ -374,8 +328,11 @@ func scaleSearch(src *image.NRGBA, targetBytes int, format Format) (*sizeResult,
 	bestScale := 0.0
 	bestQ := 0
 
-	// Phase 1: Binary search using box downsample (fast).
 	for i := 0; i < 12; i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		mid := (lo + hi) / 2
 		newW := int(float64(origW) * mid)
 		newH := int(float64(origH) * mid)
@@ -415,7 +372,6 @@ func scaleSearch(src *image.NRGBA, targetBytes int, format Format) (*sizeResult,
 		return nil, nil
 	}
 
-	// Phase 2: Final output with Lanczos.
 	finalW := int(float64(origW) * bestScale)
 	finalH := int(float64(origH) * bestScale)
 	scaled := lanczosResize(src, finalW, finalH)
@@ -445,15 +401,10 @@ func scaleSearch(src *image.NRGBA, targetBytes int, format Format) (*sizeResult,
 	}, nil
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Median-Cut Color Quantizer
-//
-// Reduces an image to ≤maxColors by recursively splitting the color space.
-// This is the same algorithm used by pngquant and other professional tools.
-// ──────────────────────────────────────────────────────────────────────────────
+// ── Median-Cut Color Quantizer ──────────────────────────────────────────────
 
 type colorBox struct {
-	pixels     [][3]uint8 // R, G, B values
+	pixels     [][3]uint8
 	rMin, rMax uint8
 	gMin, gMax uint8
 	bMin, bMax uint8
@@ -487,7 +438,6 @@ func newColorBox(pixels [][3]uint8) *colorBox {
 	return box
 }
 
-// longestAxis returns which channel has the largest spread: 0=R, 1=G, 2=B.
 func (b *colorBox) longestAxis() int {
 	rRange := int(b.rMax) - int(b.rMin)
 	gRange := int(b.gMax) - int(b.gMin)
@@ -501,7 +451,6 @@ func (b *colorBox) longestAxis() int {
 	return 2
 }
 
-// average returns the centroid color of this box.
 func (b *colorBox) average() color.NRGBA {
 	if len(b.pixels) == 0 {
 		return color.NRGBA{0, 0, 0, 255}
@@ -514,26 +463,20 @@ func (b *colorBox) average() color.NRGBA {
 	}
 	n := int64(len(b.pixels))
 	return color.NRGBA{
-		R: uint8(rSum / n),
-		G: uint8(gSum / n),
-		B: uint8(bSum / n),
-		A: 255,
+		R: uint8(rSum / n), G: uint8(gSum / n), B: uint8(bSum / n), A: 255,
 	}
 }
 
-// volume returns the volume of this box in color space.
 func (b *colorBox) volume() int {
 	return (int(b.rMax) - int(b.rMin) + 1) *
 		(int(b.gMax) - int(b.gMin) + 1) *
 		(int(b.bMax) - int(b.bMin) + 1)
 }
 
-// medianCut reduces the image to maxColors using the median-cut algorithm.
 func medianCut(img *image.NRGBA, maxColors int) color.Palette {
 	bounds := img.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
 
-	// Sample pixels (for large images, sample to keep it fast).
 	maxSamples := 100000
 	step := 1
 	if w*h > maxSamples {
@@ -547,9 +490,7 @@ func medianCut(img *image.NRGBA, maxColors int) color.Palette {
 	for i := 0; i < w*h; i += step {
 		off := i * 4
 		if off+3 < len(img.Pix) {
-			pixels = append(pixels, [3]uint8{
-				img.Pix[off], img.Pix[off+1], img.Pix[off+2],
-			})
+			pixels = append(pixels, [3]uint8{img.Pix[off], img.Pix[off+1], img.Pix[off+2]})
 		}
 	}
 
@@ -557,12 +498,9 @@ func medianCut(img *image.NRGBA, maxColors int) color.Palette {
 		return color.Palette{color.NRGBA{0, 0, 0, 255}}
 	}
 
-	// Start with one box containing all pixels.
 	boxes := []*colorBox{newColorBox(pixels)}
 
-	// Repeatedly split the box with the largest volume×count product.
 	for len(boxes) < maxColors {
-		// Find the best box to split (largest volume × pixel count).
 		bestIdx := -1
 		bestScore := -1
 		for i, box := range boxes {
@@ -575,46 +513,38 @@ func medianCut(img *image.NRGBA, maxColors int) color.Palette {
 				bestIdx = i
 			}
 		}
-
 		if bestIdx == -1 {
-			break // Can't split further.
+			break
 		}
 
 		box := boxes[bestIdx]
 		axis := box.longestAxis()
 
-		// Sort pixels along the longest axis.
 		sort.Slice(box.pixels, func(i, j int) bool {
 			return box.pixels[i][axis] < box.pixels[j][axis]
 		})
 
-		// Split at the median.
 		mid := len(box.pixels) / 2
 		left := newColorBox(box.pixels[:mid])
 		right := newColorBox(box.pixels[mid:])
 
-		// Replace the original box with the two halves.
 		boxes[bestIdx] = left
 		boxes = append(boxes, right)
 	}
 
-	// Build the palette from box centroids.
 	palette := make(color.Palette, len(boxes))
 	for i, box := range boxes {
 		palette[i] = box.average()
 	}
-
 	return palette
 }
 
-// applyPalette maps each pixel to the nearest palette color → indexed PNG.
 func applyPalette(src *image.NRGBA, palette color.Palette) *image.Paletted {
 	bounds := src.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
 
 	indexed := image.NewPaletted(bounds, palette)
 
-	// Build a lookup cache for speed.
 	type cacheKey struct{ r, g, b uint8 }
 	cache := make(map[cacheKey]uint8, 256)
 
@@ -629,7 +559,6 @@ func applyPalette(src *image.NRGBA, palette color.Palette) *image.Paletted {
 				continue
 			}
 
-			// Find nearest palette color (Euclidean distance in RGB).
 			bestIdx := 0
 			bestDist := math.MaxInt32
 			for i, c := range palette {
@@ -648,11 +577,9 @@ func applyPalette(src *image.NRGBA, palette color.Palette) *image.Paletted {
 			indexed.Pix[y*indexed.Stride+x] = uint8(bestIdx)
 		}
 	}
-
 	return indexed
 }
 
-// palettedToNRGBA converts an indexed image back to NRGBA for SSIM comparison.
 func palettedToNRGBA(p *image.Paletted) *image.NRGBA {
 	bounds := p.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
@@ -668,13 +595,10 @@ func palettedToNRGBA(p *image.Paletted) *image.NRGBA {
 			dst.Pix[off+3] = uint8(a >> 8)
 		}
 	}
-
 	return dst
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 func copyBytes(src []byte) []byte {
 	dst := make([]byte, len(src))
@@ -687,7 +611,7 @@ func decodeJPEGFromBytes(data []byte) *image.NRGBA {
 	if err != nil {
 		return nil
 	}
-	return toNRGBA(img)
+	return toNRGBARef(img)
 }
 
 func computeSSIMNRGBA(a, b *image.NRGBA) float64 {
