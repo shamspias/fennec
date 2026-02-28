@@ -8,11 +8,10 @@ import (
 )
 
 // SSIM constants based on the original Wang et al. paper.
-// These stabilize the division when the denominator is close to zero.
 const (
 	ssimK1 = 0.01
 	ssimK2 = 0.03
-	ssimL  = 255.0 // dynamic range of pixel values
+	ssimL  = 255.0
 	ssimC1 = (ssimK1 * ssimL) * (ssimK1 * ssimL)
 	ssimC2 = (ssimK2 * ssimL) * (ssimK2 * ssimL)
 )
@@ -20,27 +19,23 @@ const (
 // SSIM computes the Structural Similarity Index between two images.
 // Returns a value between 0.0 (completely different) and 1.0 (identical).
 //
-// This implementation uses a sliding window approach with a Gaussian-weighted
-// kernel, which is more accurate than block-based SSIM. It operates on
-// luminance (Y channel) since human perception is most sensitive to luminance.
+// Uses a sliding window approach with a Gaussian-weighted kernel on the
+// luminance channel (BT.601). Operates on read-only references to avoid copies.
 func SSIM(img1, img2 image.Image) float64 {
-	a := toNRGBA(img1)
-	b := toNRGBA(img2)
+	a := toNRGBARef(img1)
+	b := toNRGBARef(img2)
 
 	w := a.Bounds().Dx()
 	h := a.Bounds().Dy()
 
 	if w != b.Bounds().Dx() || h != b.Bounds().Dy() {
-		// Different sizes - resize b to match a for comparison.
 		b = lanczosResize(b, w, h)
 	}
 
 	if w < 8 || h < 8 {
-		// Too small for windowed SSIM, fall back to pixel comparison.
 		return pixelSSIM(a, b)
 	}
 
-	// Convert to luminance.
 	lumA := toLuminance(a)
 	lumB := toLuminance(b)
 
@@ -48,14 +43,13 @@ func SSIM(img1, img2 image.Image) float64 {
 }
 
 // SSIMFast computes a faster approximation of SSIM using downsampled images.
-// Useful for quick quality checks during binary search optimization.
+// Phase 2: increased max dimension from 256 to 512 for better artifact detection.
+// 512px catches subtle blocking artifacts that 256px misses, while staying fast (~20ms).
 func SSIMFast(img1, img2 *image.NRGBA) float64 {
 	w := img1.Bounds().Dx()
 	h := img1.Bounds().Dy()
 
-	// For large images, downsample to speed up SSIM calculation.
-	// SSIM at lower resolution is a good proxy for full-resolution SSIM.
-	maxDim := 256
+	maxDim := 512 // Phase 2: was 256, increased for accuracy.
 	if w > maxDim || h > maxDim {
 		scale := float64(maxDim) / math.Max(float64(w), float64(h))
 		newW := int(math.Max(8, math.Round(float64(w)*scale)))
@@ -80,25 +74,24 @@ func windowedSSIM(lumA, lumB []float64, w, h int) float64 {
 	const windowSize = 8
 	half := windowSize / 2
 
-	// Precompute Gaussian kernel.
 	kernel := gaussianKernel(windowSize, 1.5)
 
-	// Use parallel processing for large images.
 	type ssimResult struct {
 		sum   float64
 		count int
 	}
 
 	procs := runtime.GOMAXPROCS(0)
-	if procs > h-windowSize+1 {
-		procs = h - windowSize + 1
+	rows := h - windowSize + 1
+	if procs > rows {
+		procs = rows
 	}
 	if procs < 1 {
 		procs = 1
 	}
 
 	results := make([]ssimResult, procs)
-	rowsPerProc := (h - windowSize + 1 + procs - 1) / procs
+	rowsPerProc := (rows + procs - 1) / procs
 
 	var wg sync.WaitGroup
 	for p := 0; p < procs; p++ {
@@ -119,7 +112,6 @@ func windowedSSIM(lumA, lumB []float64, w, h int) float64 {
 					var muA, muB float64
 					var sigAA, sigBB, sigAB float64
 
-					// Compute weighted means.
 					ki := 0
 					for wy := -half; wy < half; wy++ {
 						for wx := -half; wx < half; wx++ {
@@ -133,7 +125,6 @@ func windowedSSIM(lumA, lumB []float64, w, h int) float64 {
 						}
 					}
 
-					// Compute weighted variances and covariance.
 					ki = 0
 					for wy := -half; wy < half; wy++ {
 						for wx := -half; wx < half; wx++ {
@@ -148,7 +139,6 @@ func windowedSSIM(lumA, lumB []float64, w, h int) float64 {
 						}
 					}
 
-					// SSIM formula.
 					num := (2*muA*muB + ssimC1) * (2*sigAB + ssimC2)
 					den := (muA*muA + muB*muB + ssimC1) * (sigAA + sigBB + ssimC2)
 
@@ -214,7 +204,6 @@ func pixelSSIM(a, b *image.NRGBA) float64 {
 }
 
 // toLuminance converts an NRGBA image to a float64 luminance array.
-// Uses BT.601 coefficients (same as JPEG): Y = 0.299R + 0.587G + 0.114B
 func toLuminance(img *image.NRGBA) []float64 {
 	w := img.Bounds().Dx()
 	h := img.Bounds().Dy()
@@ -224,10 +213,7 @@ func toLuminance(img *image.NRGBA) []float64 {
 		off := y * img.Stride
 		for x := 0; x < w; x++ {
 			i := off + x*4
-			r := float64(img.Pix[i])
-			g := float64(img.Pix[i+1])
-			b := float64(img.Pix[i+2])
-			lum[y*w+x] = 0.299*r + 0.587*g + 0.114*b
+			lum[y*w+x] = 0.299*float64(img.Pix[i]) + 0.587*float64(img.Pix[i+1]) + 0.114*float64(img.Pix[i+2])
 		}
 	}
 	return lum
@@ -248,8 +234,6 @@ func gaussianKernel(size int, sigma float64) []float64 {
 			idx++
 		}
 	}
-
-	// Normalize.
 	for i := range kernel {
 		kernel[i] /= sum
 	}
@@ -257,7 +241,6 @@ func gaussianKernel(size int, sigma float64) []float64 {
 }
 
 // boxDownsample performs fast box-filter downsampling.
-// This is much faster than Lanczos for SSIM calculation purposes.
 func boxDownsample(img *image.NRGBA, dstW, dstH int) *image.NRGBA {
 	srcW := img.Bounds().Dx()
 	srcH := img.Bounds().Dy()
@@ -279,6 +262,9 @@ func boxDownsample(img *image.NRGBA, dstW, dstH int) *image.NRGBA {
 		if sy0 >= sy1 {
 			sy0 = sy1 - 1
 		}
+		if sy0 < 0 {
+			sy0 = 0
+		}
 
 		for dx := 0; dx < dstW; dx++ {
 			sx0 := int(float64(dx) * xRatio)
@@ -288,6 +274,9 @@ func boxDownsample(img *image.NRGBA, dstW, dstH int) *image.NRGBA {
 			}
 			if sx0 >= sx1 {
 				sx0 = sx1 - 1
+			}
+			if sx0 < 0 {
+				sx0 = 0
 			}
 
 			var rSum, gSum, bSum, aSum float64
@@ -318,11 +307,10 @@ func boxDownsample(img *image.NRGBA, dstW, dstH int) *image.NRGBA {
 }
 
 // MSSSIM computes Multi-Scale SSIM, which better correlates with
-// human perception than single-scale SSIM. It evaluates structural
-// similarity at multiple resolutions.
+// human perception than single-scale SSIM.
 func MSSSIM(img1, img2 image.Image) float64 {
-	a := toNRGBA(img1)
-	b := toNRGBA(img2)
+	a := toNRGBARef(img1)
+	b := toNRGBARef(img2)
 
 	w := a.Bounds().Dx()
 	h := a.Bounds().Dy()
@@ -331,16 +319,13 @@ func MSSSIM(img1, img2 image.Image) float64 {
 		b = lanczosResize(b, w, h)
 	}
 
-	// Weights from the original MS-SSIM paper (Wang et al., 2003).
 	weights := []float64{0.0448, 0.2856, 0.3001, 0.2363, 0.1333}
 	levels := len(weights)
 
-	// We need at least 8x8 at the coarsest level.
 	for i := 0; i < levels-1; i++ {
 		minDim := int(math.Min(float64(w), float64(h)))
 		if minDim < 8 {
 			weights = weights[:i+1]
-			// Renormalize weights.
 			var sum float64
 			for _, wt := range weights {
 				sum += wt
@@ -354,25 +339,23 @@ func MSSSIM(img1, img2 image.Image) float64 {
 		h /= 2
 	}
 
+	// We need mutable copies for the multi-scale downsampling.
+	aCopy := toNRGBA(a)
+	bCopy := toNRGBA(b)
+
 	var result float64
 	for i, wt := range weights {
-		ssim := SSIMFast(a, b)
-		if i == len(weights)-1 {
-			result += wt * math.Log(math.Max(ssim, 1e-10))
-		} else {
-			// At intermediate scales, only use contrast and structure.
-			result += wt * math.Log(math.Max(ssim, 1e-10))
-		}
+		ssim := SSIMFast(aCopy, bCopy)
+		result += wt * math.Log(math.Max(ssim, 1e-10))
 
 		if i < len(weights)-1 {
-			// Downsample by 2x for next scale.
-			nw := a.Bounds().Dx() / 2
-			nh := a.Bounds().Dy() / 2
+			nw := aCopy.Bounds().Dx() / 2
+			nh := aCopy.Bounds().Dy() / 2
 			if nw < 8 || nh < 8 {
 				break
 			}
-			a = boxDownsample(a, nw, nh)
-			b = boxDownsample(b, nw, nh)
+			aCopy = boxDownsample(aCopy, nw, nh)
+			bCopy = boxDownsample(bCopy, nw, nh)
 		}
 	}
 
