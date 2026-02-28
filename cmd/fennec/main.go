@@ -15,9 +15,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -34,6 +36,7 @@ func main() {
 		targetSize string
 		analyze    bool
 		ssim       float64
+		noOrient   bool
 	)
 
 	flag.StringVar(&quality, "quality", "balanced", "Quality preset: lossless|ultra|high|balanced|aggressive|maximum")
@@ -43,6 +46,7 @@ func main() {
 	flag.StringVar(&targetSize, "target-size", "", "Target file size (e.g. 100KB, 2MB)")
 	flag.BoolVar(&analyze, "analyze", false, "Analyze image without compressing")
 	flag.Float64Var(&ssim, "ssim", 0, "Custom SSIM target (0.0-1.0, overrides quality)")
+	flag.BoolVar(&noOrient, "no-orient", false, "Don't auto-rotate based on EXIF orientation")
 	flag.Parse()
 
 	args := flag.Args()
@@ -53,6 +57,10 @@ func main() {
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
+
+	// Support Ctrl+C cancellation.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
 
 	input := args[0]
 
@@ -71,6 +79,7 @@ func main() {
 	}
 
 	opts := fennec.DefaultOptions()
+	opts.AutoOrient = !noOrient
 
 	switch strings.ToLower(quality) {
 	case "lossless":
@@ -115,14 +124,20 @@ func main() {
 		opts.TargetSize = bytes
 	}
 
-	result, err := fennec.CompressFile(input, output, opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	// Progress callback for terminal feedback.
+	opts.OnProgress = func(stage fennec.ProgressStage, percent float64) error {
+		fmt.Fprintf(os.Stderr, "\r  %s... %.0f%%", stage, percent*100)
+		return nil
 	}
 
-	// If the target-size engine chose a different format than the output
-	// extension, rename the file so it opens correctly.
+	result, err := fennec.CompressFile(ctx, input, output, opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stderr) // Clear progress line.
+
+	// If the target-size engine chose a different format, rename the file.
 	actualExt := ".png"
 	if result.Format == fennec.JPEG {
 		actualExt = ".jpg"
@@ -140,7 +155,7 @@ func main() {
 }
 
 func runAnalyze(path string) {
-	img, err := fennec.Open(path)
+	img, err := fennec.OpenAndOrient(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", path, err)
 		os.Exit(1)
@@ -149,22 +164,22 @@ func runAnalyze(path string) {
 	info, _ := os.Stat(path)
 	stats := fennec.Analyze(img)
 
-	fmt.Printf("📐 File:         %s\n", path)
+	fmt.Printf("File:         %s\n", path)
 	if info != nil {
-		fmt.Printf("💾 Size:         %s\n", humanBytes(info.Size()))
+		fmt.Printf("Size:         %s\n", humanBytes(info.Size()))
 	}
-	fmt.Printf("📏 Dimensions:   %d × %d\n", stats.Width, stats.Height)
-	fmt.Printf("🎭 Alpha:        %v\n", stats.HasAlpha)
-	fmt.Printf("⬛ Grayscale:    %v\n", stats.IsGrayscale)
-	fmt.Printf("🎨 Unique colors: %d+\n", stats.UniqueColors)
-	fmt.Printf("📊 Entropy:      %.2f bits\n", stats.Entropy)
-	fmt.Printf("🔲 Edge density: %.1f%%\n", stats.EdgeDensity*100)
-	fmt.Printf("☀️  Brightness:   %.0f\n", stats.MeanBrightness)
-	fmt.Printf("🌗 Contrast:     %.1f\n", stats.Contrast)
+	fmt.Printf("Dimensions:   %d x %d\n", stats.Width, stats.Height)
+	fmt.Printf("Alpha:        %v\n", stats.HasAlpha)
+	fmt.Printf("Grayscale:    %v\n", stats.IsGrayscale)
+	fmt.Printf("Unique colors: %d+\n", stats.UniqueColors)
+	fmt.Printf("Entropy:      %.2f bits\n", stats.Entropy)
+	fmt.Printf("Edge density: %.1f%%\n", stats.EdgeDensity*100)
+	fmt.Printf("Brightness:   %.0f\n", stats.MeanBrightness)
+	fmt.Printf("Contrast:     %.1f\n", stats.Contrast)
 	fmt.Println()
-	fmt.Printf("💡 Recommended format:  %s\n", formatName(stats.RecommendedFormat))
-	fmt.Printf("💡 Recommended quality: %s\n", stats.RecommendedQuality)
-	fmt.Printf("💡 Est. compression:    ~%.0f%%\n", stats.EstimatedCompression*100)
+	fmt.Printf("Recommended format:  %s\n", stats.RecommendedFormat)
+	fmt.Printf("Recommended quality: %s\n", stats.RecommendedQuality)
+	fmt.Printf("Est. compression:    ~%.0f%%\n", stats.EstimatedCompression*100)
 }
 
 func parseSize(s string) (int, error) {
@@ -194,16 +209,5 @@ func humanBytes(b int64) string {
 		return fmt.Sprintf("%.1f KB", float64(b)/1024)
 	default:
 		return fmt.Sprintf("%d B", b)
-	}
-}
-
-func formatName(f fennec.Format) string {
-	switch f {
-	case fennec.JPEG:
-		return "JPEG"
-	case fennec.PNG:
-		return "PNG"
-	default:
-		return "Auto"
 	}
 }

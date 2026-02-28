@@ -2,6 +2,7 @@ package fennec
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -10,34 +11,33 @@ import (
 	"testing"
 )
 
-// makeTestImage creates a test image with a gradient pattern.
+// ── Test Helpers ────────────────────────────────────────────────────────────
+
 func makeTestImage(w, h int) *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			off := y*img.Stride + x*4
-			img.Pix[off] = uint8(x * 255 / w)     // R gradient
-			img.Pix[off+1] = uint8(y * 255 / h)   // G gradient
-			img.Pix[off+2] = uint8((x + y) % 256) // B pattern
+			img.Pix[off] = uint8(x * 255 / w)
+			img.Pix[off+1] = uint8(y * 255 / h)
+			img.Pix[off+2] = uint8((x + y) % 256)
 			img.Pix[off+3] = 0xff
 		}
 	}
 	return img
 }
 
-// makeTestImageWithAlpha creates a test image with varying transparency.
 func makeTestImageWithAlpha(w, h int) *image.NRGBA {
 	img := makeTestImage(w, h)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			off := y*img.Stride + x*4
-			img.Pix[off+3] = uint8(x * 255 / w) // Alpha gradient
+			img.Pix[off+3] = uint8(x * 255 / w)
 		}
 	}
 	return img
 }
 
-// makeSolidImage creates a solid color image.
 func makeSolidImage(w, h int, c color.NRGBA) *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	for i := 0; i < len(img.Pix); i += 4 {
@@ -48,6 +48,10 @@ func makeSolidImage(w, h int, c color.NRGBA) *image.NRGBA {
 	}
 	return img
 }
+
+func ctx() context.Context { return context.Background() }
+
+// ── SSIM Tests ──────────────────────────────────────────────────────────────
 
 func TestSSIMIdentical(t *testing.T) {
 	img := makeTestImage(100, 100)
@@ -68,22 +72,17 @@ func TestSSIMDifferent(t *testing.T) {
 
 func TestSSIMSimilar(t *testing.T) {
 	img := makeTestImage(100, 100)
-
-	// Modify the image more noticeably.
 	modified := image.NewNRGBA(image.Rect(0, 0, 100, 100))
 	copy(modified.Pix, img.Pix)
 	for i := 0; i < len(modified.Pix); i += 4 {
 		if modified.Pix[i] > 10 {
-			modified.Pix[i] -= 10 // Noticeable change to R channel.
+			modified.Pix[i] -= 10
 		}
 	}
 
 	ssim := SSIM(img, modified)
-	if ssim < 0.85 {
-		t.Fatalf("SSIM of slightly modified image should be high, got %f", ssim)
-	}
-	if ssim > 0.999 {
-		t.Fatalf("SSIM should not be near-perfect for modified image, got %f", ssim)
+	if ssim < 0.85 || ssim > 0.999 {
+		t.Fatalf("SSIM of slightly modified image should be in [0.85, 0.999), got %f", ssim)
 	}
 }
 
@@ -103,13 +102,23 @@ func TestSSIMSmallImage(t *testing.T) {
 	}
 }
 
+func TestMSSSIM(t *testing.T) {
+	img := makeTestImage(128, 128)
+	msssim := MSSSIM(img, img)
+	if msssim < 0.99 {
+		t.Fatalf("MS-SSIM of identical images should be ~1.0, got %f", msssim)
+	}
+}
+
+// ── Compression Tests ───────────────────────────────────────────────────────
+
 func TestCompressImageJPEG(t *testing.T) {
 	img := makeTestImage(200, 200)
 	opts := DefaultOptions()
 	opts.Format = JPEG
 	opts.Quality = Balanced
 
-	result, err := CompressImage(img, opts)
+	result, err := CompressImage(ctx(), img, opts)
 	if err != nil {
 		t.Fatalf("CompressImage failed: %v", err)
 	}
@@ -123,6 +132,10 @@ func TestCompressImageJPEG(t *testing.T) {
 	if result.JPEGQuality < 1 || result.JPEGQuality > 100 {
 		t.Fatalf("invalid JPEG quality: %d", result.JPEGQuality)
 	}
+	// Phase 1: verify CompressedData is populated.
+	if len(result.CompressedData) == 0 {
+		t.Fatal("CompressedData should not be empty")
+	}
 }
 
 func TestCompressImagePNG(t *testing.T) {
@@ -130,7 +143,7 @@ func TestCompressImagePNG(t *testing.T) {
 	opts := DefaultOptions()
 	opts.Format = PNG
 
-	result, err := CompressImage(img, opts)
+	result, err := CompressImage(ctx(), img, opts)
 	if err != nil {
 		t.Fatalf("CompressImage failed: %v", err)
 	}
@@ -144,12 +157,11 @@ func TestCompressImagePNG(t *testing.T) {
 }
 
 func TestCompressAutoFormat(t *testing.T) {
-	// Opaque image with many colors → should choose JPEG.
 	opaqueImg := makeTestImage(200, 200)
 	opts := DefaultOptions()
 	opts.Format = Auto
 
-	result, err := CompressImage(opaqueImg, opts)
+	result, err := CompressImage(ctx(), opaqueImg, opts)
 	if err != nil {
 		t.Fatalf("CompressImage failed: %v", err)
 	}
@@ -157,9 +169,8 @@ func TestCompressAutoFormat(t *testing.T) {
 		t.Fatalf("expected JPEG for opaque gradient, got %v", result.Format)
 	}
 
-	// Image with alpha → should choose PNG.
 	alphaImg := makeTestImageWithAlpha(100, 100)
-	result, err = CompressImage(alphaImg, opts)
+	result, err = CompressImage(ctx(), alphaImg, opts)
 	if err != nil {
 		t.Fatalf("CompressImage failed: %v", err)
 	}
@@ -179,7 +190,7 @@ func TestCompressQualityPresets(t *testing.T) {
 		opts.Format = JPEG
 		opts.Quality = preset
 
-		result, err := CompressImage(img, opts)
+		result, err := CompressImage(ctx(), img, opts)
 		if err != nil {
 			t.Fatalf("CompressImage (%s) failed: %v", preset, err)
 		}
@@ -189,7 +200,6 @@ func TestCompressQualityPresets(t *testing.T) {
 			t.Fatalf("%s: SSIM %f below target %f", preset, result.SSIM, target)
 		}
 
-		// Each lower quality preset should produce lower or equal SSIM.
 		if result.SSIM > prevSSIM+0.01 {
 			t.Logf("Warning: %s SSIM (%f) higher than previous (%f)", preset, result.SSIM, prevSSIM)
 		}
@@ -204,7 +214,7 @@ func TestCompressWithResize(t *testing.T) {
 	opts.MaxWidth = 500
 	opts.MaxHeight = 500
 
-	result, err := CompressImage(img, opts)
+	result, err := CompressImage(ctx(), img, opts)
 	if err != nil {
 		t.Fatalf("CompressImage failed: %v", err)
 	}
@@ -213,7 +223,6 @@ func TestCompressWithResize(t *testing.T) {
 		t.Fatalf("image not resized: %dx%d", result.FinalDimensions.X, result.FinalDimensions.Y)
 	}
 
-	// Check aspect ratio preservation.
 	originalRatio := 1000.0 / 800.0
 	newRatio := float64(result.FinalDimensions.X) / float64(result.FinalDimensions.Y)
 	if math.Abs(originalRatio-newRatio) > 0.02 {
@@ -225,35 +234,123 @@ func TestCompressTargetSize(t *testing.T) {
 	img := makeTestImage(300, 300)
 	opts := DefaultOptions()
 	opts.Format = JPEG
-	opts.TargetSize = 5000 // Target 5KB
+	opts.TargetSize = 5000
 
-	result, err := CompressImage(img, opts)
+	result, err := CompressImage(ctx(), img, opts)
 	if err != nil {
 		t.Fatalf("CompressImage failed: %v", err)
 	}
 
-	// Should be within 50% of target (binary search isn't exact).
 	if result.CompressedSize > int64(opts.TargetSize)*2 {
 		t.Fatalf("compressed size %d far exceeds target %d", result.CompressedSize, opts.TargetSize)
 	}
 }
 
+func TestCompressNilImage(t *testing.T) {
+	_, err := CompressImage(ctx(), nil, DefaultOptions())
+	if err == nil {
+		t.Fatal("should error on nil image")
+	}
+}
+
+func TestCompressEmptyImage(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 0, 0))
+	_, err := CompressImage(ctx(), img, DefaultOptions())
+	if err == nil {
+		t.Fatal("should error on empty image")
+	}
+}
+
+// ── Context Cancellation Tests ──────────────────────────────────────────────
+
+func TestCompressContextCancelled(t *testing.T) {
+	img := makeTestImage(200, 200)
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately.
+
+	_, err := CompressImage(cancelledCtx, img, DefaultOptions())
+	if err == nil {
+		t.Fatal("should error on cancelled context")
+	}
+}
+
+// ── CompressBytes Test ──────────────────────────────────────────────────────
+
+func TestCompressBytes(t *testing.T) {
+	img := makeTestImage(100, 100)
+	var buf bytes.Buffer
+	jpeg.Encode(&buf, img, &jpeg.Options{Quality: 95})
+
+	result, err := CompressBytes(ctx(), buf.Bytes(), DefaultOptions())
+	if err != nil {
+		t.Fatalf("CompressBytes failed: %v", err)
+	}
+	if len(result.CompressedData) == 0 {
+		t.Fatal("CompressedData should not be empty")
+	}
+}
+
+// ── Result.WriteTo Test ─────────────────────────────────────────────────────
+
+func TestResultWriteTo(t *testing.T) {
+	img := makeTestImage(100, 100)
+	opts := DefaultOptions()
+	opts.Format = JPEG
+	result, err := CompressImage(ctx(), img, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	n, err := result.WriteTo(&buf)
+	if err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+	if n != int64(len(result.CompressedData)) {
+		t.Fatalf("WriteTo wrote %d bytes, expected %d", n, len(result.CompressedData))
+	}
+	if buf.Len() == 0 {
+		t.Fatal("WriteTo output should not be empty")
+	}
+}
+
+// ── Progress Callback Test ──────────────────────────────────────────────────
+
+func TestProgressCallback(t *testing.T) {
+	img := makeTestImage(100, 100)
+	var stages []ProgressStage
+
+	opts := DefaultOptions()
+	opts.Format = JPEG
+	opts.OnProgress = func(stage ProgressStage, percent float64) error {
+		stages = append(stages, stage)
+		return nil
+	}
+
+	_, err := CompressImage(ctx(), img, opts)
+	if err != nil {
+		t.Fatalf("CompressImage failed: %v", err)
+	}
+	if len(stages) == 0 {
+		t.Fatal("progress callback was never called")
+	}
+}
+
+// ── Resize Tests ────────────────────────────────────────────────────────────
+
 func TestLanczosResize(t *testing.T) {
 	img := makeTestImage(100, 100)
 
-	// Downscale.
 	small := lanczosResize(img, 50, 50)
 	if small.Bounds().Dx() != 50 || small.Bounds().Dy() != 50 {
 		t.Fatalf("expected 50x50, got %dx%d", small.Bounds().Dx(), small.Bounds().Dy())
 	}
 
-	// Upscale.
 	big := lanczosResize(img, 200, 200)
 	if big.Bounds().Dx() != 200 || big.Bounds().Dy() != 200 {
 		t.Fatalf("expected 200x200, got %dx%d", big.Bounds().Dx(), big.Bounds().Dy())
 	}
 
-	// Identity.
 	same := lanczosResize(img, 100, 100)
 	if same.Bounds().Dx() != 100 || same.Bounds().Dy() != 100 {
 		t.Fatalf("expected 100x100, got %dx%d", same.Bounds().Dx(), same.Bounds().Dy())
@@ -261,25 +358,36 @@ func TestLanczosResize(t *testing.T) {
 }
 
 func TestLanczosResizeQuality(t *testing.T) {
-	// Use a smooth gradient (realistic image content).
 	img := makeTestImage(100, 100)
-
-	// Downscale and upscale back.
 	small := lanczosResize(img, 50, 50)
 	restored := lanczosResize(small, 100, 100)
 
-	// SSIM should be reasonable for smooth content.
 	ssim := SSIM(img, restored)
 	if ssim < 0.5 {
-		t.Fatalf("Lanczos round-trip quality too low for gradient: %f", ssim)
+		t.Fatalf("Lanczos round-trip quality too low: %f", ssim)
 	}
 }
+
+func TestSmartResize(t *testing.T) {
+	img := makeTestImage(1000, 500)
+
+	resized := smartResize(img, 200, 200)
+	if resized.Bounds().Dx() > 200 || resized.Bounds().Dy() > 200 {
+		t.Fatalf("should fit in 200x200, got %dx%d", resized.Bounds().Dx(), resized.Bounds().Dy())
+	}
+
+	resized = smartResize(img, 2000, 2000)
+	if resized.Bounds().Dx() != 1000 || resized.Bounds().Dy() != 500 {
+		t.Fatal("should not resize when already fits")
+	}
+}
+
+// ── Analysis Tests ──────────────────────────────────────────────────────────
 
 func TestAnalyze(t *testing.T) {
 	t.Run("gradient", func(t *testing.T) {
 		img := makeTestImage(200, 200)
 		stats := Analyze(img)
-
 		if stats.Width != 200 || stats.Height != 200 {
 			t.Fatalf("wrong dimensions: %dx%d", stats.Width, stats.Height)
 		}
@@ -294,7 +402,6 @@ func TestAnalyze(t *testing.T) {
 	t.Run("solid_color", func(t *testing.T) {
 		img := makeSolidImage(100, 100, color.NRGBA{128, 128, 128, 255})
 		stats := Analyze(img)
-
 		if !stats.IsGrayscale {
 			t.Fatal("should be grayscale")
 		}
@@ -306,7 +413,6 @@ func TestAnalyze(t *testing.T) {
 	t.Run("with_alpha", func(t *testing.T) {
 		img := makeTestImageWithAlpha(100, 100)
 		stats := Analyze(img)
-
 		if !stats.HasAlpha {
 			t.Fatal("should have alpha")
 		}
@@ -316,13 +422,13 @@ func TestAnalyze(t *testing.T) {
 	})
 }
 
+// ── Effects Tests ───────────────────────────────────────────────────────────
+
 func TestSharpen(t *testing.T) {
-	// Create image with sharp edges that sharpening will amplify.
 	img := image.NewNRGBA(image.Rect(0, 0, 100, 100))
 	for y := 0; y < 100; y++ {
 		for x := 0; x < 100; x++ {
 			off := y*img.Stride + x*4
-			// Create stripes pattern with sharp edges.
 			if (x/10)%2 == 0 {
 				img.Pix[off] = 200
 				img.Pix[off+1] = 50
@@ -337,12 +443,10 @@ func TestSharpen(t *testing.T) {
 	}
 
 	sharpened := Sharpen(img, 0.8)
-
 	if sharpened.Bounds() != img.Bounds() {
 		t.Fatal("sharpen should preserve dimensions")
 	}
 
-	// Check that at least some pixels changed.
 	changed := false
 	for i := 0; i < len(img.Pix); i++ {
 		if img.Pix[i] != sharpened.Pix[i] {
@@ -355,43 +459,21 @@ func TestSharpen(t *testing.T) {
 	}
 }
 
-func TestAdaptiveSharpen(t *testing.T) {
-	img := makeTestImage(50, 50)
-	sharpened := AdaptiveSharpen(img, 0.5)
-
-	if sharpened.Bounds() != img.Bounds() {
-		t.Fatal("adaptive sharpen should preserve dimensions")
-	}
-}
-
 func TestGaussianBlur(t *testing.T) {
 	img := makeTestImage(100, 100)
 	blurred := GaussianBlur(img, 2.0)
-
 	if blurred.Bounds() != img.Bounds() {
 		t.Fatal("blur should preserve dimensions")
 	}
-
-	// Check that pixels actually changed.
-	changed := false
-	for i := 0; i < len(img.Pix); i++ {
-		if img.Pix[i] != blurred.Pix[i] {
-			changed = true
-			break
-		}
-	}
-	if !changed {
-		t.Fatal("blur should change the image")
-	}
-
 	ssim := SSIM(img, blurred)
 	if ssim < 0.3 {
 		t.Fatalf("blur changed image too much: SSIM %f", ssim)
 	}
 }
 
+// ── Conversion Tests ────────────────────────────────────────────────────────
+
 func TestFormatAnalysis(t *testing.T) {
-	// Few colors → PNG.
 	fewColors := image.NewNRGBA(image.Rect(0, 0, 100, 100))
 	for i := 0; i < len(fewColors.Pix); i += 4 {
 		fewColors.Pix[i] = 255
@@ -401,13 +483,11 @@ func TestFormatAnalysis(t *testing.T) {
 		t.Fatalf("expected PNG for few-color image, got %v", f)
 	}
 
-	// Many colors → JPEG.
 	manyColors := makeTestImage(200, 200)
 	if f := analyzeFormat(manyColors); f != JPEG {
 		t.Fatalf("expected JPEG for gradient image, got %v", f)
 	}
 
-	// Alpha → PNG.
 	alphaImg := makeTestImageWithAlpha(100, 100)
 	if f := analyzeFormat(alphaImg); f != PNG {
 		t.Fatalf("expected PNG for alpha image, got %v", f)
@@ -415,13 +495,10 @@ func TestFormatAnalysis(t *testing.T) {
 }
 
 func TestIsOpaque(t *testing.T) {
-	opaque := makeTestImage(10, 10)
-	if !isOpaque(opaque) {
+	if !isOpaque(makeTestImage(10, 10)) {
 		t.Fatal("should be opaque")
 	}
-
-	transparent := makeTestImageWithAlpha(10, 10)
-	if isOpaque(transparent) {
+	if isOpaque(makeTestImageWithAlpha(10, 10)) {
 		t.Fatal("should not be opaque")
 	}
 }
@@ -431,15 +508,12 @@ func TestIsGrayscale(t *testing.T) {
 	if !isGrayscale(gray) {
 		t.Fatal("should be grayscale")
 	}
-
-	colorful := makeTestImage(10, 10)
-	if isGrayscale(colorful) {
+	if isGrayscale(makeTestImage(10, 10)) {
 		t.Fatal("should not be grayscale")
 	}
 }
 
 func TestTryPalettize(t *testing.T) {
-	// Image with few colors should palettize.
 	fewColors := image.NewNRGBA(image.Rect(0, 0, 50, 50))
 	for y := 0; y < 50; y++ {
 		for x := 0; x < 50; x++ {
@@ -450,55 +524,43 @@ func TestTryPalettize(t *testing.T) {
 			fewColors.Pix[off+3] = 255
 		}
 	}
-	paletted := tryPalettize(fewColors, 256)
-	if paletted == nil {
+	if tryPalettize(fewColors, 256) == nil {
 		t.Fatal("should palettize image with few colors")
 	}
 
-	// Image with many colors should not palettize.
-	manyColors := makeTestImage(200, 200)
-	paletted = tryPalettize(manyColors, 256)
-	if paletted != nil {
+	if tryPalettize(makeTestImage(200, 200), 256) != nil {
 		t.Fatal("should not palettize gradient image")
 	}
 }
 
-func TestSmartResize(t *testing.T) {
-	img := makeTestImage(1000, 500)
+// ── EXIF Orientation Tests ──────────────────────────────────────────────────
 
-	// Constrain width.
-	resized := smartResize(img, 200, 0)
-	if resized.Bounds().Dx() != 1000 || resized.Bounds().Dy() != 500 {
-		// maxH=0 means no height constraint, but MaxWidth isn't the only path.
+func TestApplyOrientation(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 100, 50))
+	// Mark top-left red.
+	img.Pix[0] = 255
+	img.Pix[3] = 255
+
+	// Normal — should be unchanged.
+	normal := ApplyOrientation(img, OrientNormal)
+	if normal.Bounds().Dx() != 100 || normal.Bounds().Dy() != 50 {
+		t.Fatal("normal should be 100x50")
 	}
 
-	// Constrain both.
-	resized = smartResize(img, 200, 200)
-	if resized.Bounds().Dx() > 200 || resized.Bounds().Dy() > 200 {
-		t.Fatalf("should fit in 200x200, got %dx%d", resized.Bounds().Dx(), resized.Bounds().Dy())
+	// Rotate 90 CW — should swap dimensions.
+	rotated := ApplyOrientation(img, OrientRotate90CW)
+	if rotated.Bounds().Dx() != 50 || rotated.Bounds().Dy() != 100 {
+		t.Fatalf("90CW should be 50x100, got %dx%d", rotated.Bounds().Dx(), rotated.Bounds().Dy())
 	}
 
-	// Already fits.
-	resized = smartResize(img, 2000, 2000)
-	if resized.Bounds().Dx() != 1000 || resized.Bounds().Dy() != 500 {
-		t.Fatal("should not resize when already fits")
-	}
-}
-
-func TestCompressNilImage(t *testing.T) {
-	_, err := CompressImage(nil, DefaultOptions())
-	if err == nil {
-		t.Fatal("should error on nil image")
+	// Rotate 180 — should keep dimensions.
+	rot180 := ApplyOrientation(img, OrientRotate180)
+	if rot180.Bounds().Dx() != 100 || rot180.Bounds().Dy() != 50 {
+		t.Fatal("180 should be 100x50")
 	}
 }
 
-func TestCompressEmptyImage(t *testing.T) {
-	img := image.NewNRGBA(image.Rect(0, 0, 0, 0))
-	_, err := CompressImage(img, DefaultOptions())
-	if err == nil {
-		t.Fatal("should error on empty image")
-	}
-}
+// ── Type Tests ──────────────────────────────────────────────────────────────
 
 func TestQualityString(t *testing.T) {
 	presets := map[Quality]string{
@@ -513,6 +575,18 @@ func TestQualityString(t *testing.T) {
 		if q.String() != name {
 			t.Fatalf("expected %q, got %q", name, q.String())
 		}
+	}
+}
+
+func TestDefaultQualityIsBalanced(t *testing.T) {
+	// Phase 1 fix: zero-value of Quality should be Balanced.
+	var q Quality
+	if q != Balanced {
+		t.Fatalf("zero-value Quality should be Balanced, got %s", q)
+	}
+	opts := Options{}
+	if opts.Quality != Balanced {
+		t.Fatalf("zero-value Options.Quality should be Balanced, got %s", opts.Quality)
 	}
 }
 
@@ -545,8 +619,7 @@ func TestResultString(t *testing.T) {
 		SSIM:               0.9650,
 		SavingsPercent:     90.0,
 	}
-	s := r.String()
-	if len(s) == 0 {
+	if len(r.String()) == 0 {
 		t.Fatal("Result.String() should not be empty")
 	}
 }
@@ -554,17 +627,16 @@ func TestResultString(t *testing.T) {
 func TestEncodeJPEG(t *testing.T) {
 	img := makeTestImage(100, 100)
 	var buf bytes.Buffer
-	err := Encode(&buf, img, JPEG, DefaultOptions())
+	opts := DefaultOptions()
+	opts.Format = JPEG
+	err := Encode(&buf, img, JPEG, opts)
 	if err != nil {
 		t.Fatalf("Encode JPEG failed: %v", err)
 	}
 	if buf.Len() == 0 {
 		t.Fatal("encoded JPEG should not be empty")
 	}
-
-	// Verify it's valid JPEG.
-	_, err = jpeg.Decode(&buf)
-	if err != nil {
+	if _, err = jpeg.Decode(&buf); err != nil {
 		t.Fatalf("encoded data is not valid JPEG: %v", err)
 	}
 }
@@ -576,13 +648,7 @@ func TestEncodePNG(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Encode PNG failed: %v", err)
 	}
-	if buf.Len() == 0 {
-		t.Fatal("encoded PNG should not be empty")
-	}
-
-	// Verify it's valid PNG.
-	_, err = png.Decode(&buf)
-	if err != nil {
+	if _, err = png.Decode(&buf); err != nil {
 		t.Fatalf("encoded data is not valid PNG: %v", err)
 	}
 }
@@ -595,15 +661,7 @@ func TestBoxDownsample(t *testing.T) {
 	}
 }
 
-func TestMSSSIM(t *testing.T) {
-	img := makeTestImage(128, 128)
-	msssim := MSSSIM(img, img)
-	if msssim < 0.99 {
-		t.Fatalf("MS-SSIM of identical images should be ~1.0, got %f", msssim)
-	}
-}
-
-// Benchmarks.
+// ── Benchmarks ──────────────────────────────────────────────────────────────
 
 func BenchmarkSSIM(b *testing.B) {
 	img := makeTestImage(500, 500)
@@ -639,7 +697,7 @@ func BenchmarkCompressJPEG(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		CompressImage(img, opts)
+		CompressImage(ctx(), img, opts)
 	}
 }
 

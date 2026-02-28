@@ -20,12 +20,10 @@ func smartResize(img *image.NRGBA, maxW, maxH int) *image.NRGBA {
 		maxH = srcH
 	}
 
-	// Already fits.
 	if srcW <= maxW && srcH <= maxH {
 		return img
 	}
 
-	// Compute target dimensions preserving aspect ratio.
 	ratio := math.Min(float64(maxW)/float64(srcW), float64(maxH)/float64(srcH))
 	dstW := int(math.Max(1, math.Round(float64(srcW)*ratio)))
 	dstH := int(math.Max(1, math.Round(float64(srcH)*ratio)))
@@ -34,12 +32,8 @@ func smartResize(img *image.NRGBA, maxW, maxH int) *image.NRGBA {
 }
 
 // lanczosResize performs high-quality Lanczos-3 interpolation.
-// This is a two-pass separable filter: horizontal then vertical.
-//
-// Improvements over imaging library:
-// - Pre-multiplied alpha handling prevents color fringing at transparency edges
-// - Better weight normalization for edge pixels
-// - Optimized memory access patterns for cache locality
+// Two-pass separable filter: horizontal then vertical.
+// Uses pre-multiplied alpha to prevent color fringing at transparency edges.
 func lanczosResize(img *image.NRGBA, dstW, dstH int) *image.NRGBA {
 	srcW := img.Bounds().Dx()
 	srcH := img.Bounds().Dy()
@@ -54,12 +48,11 @@ func lanczosResize(img *image.NRGBA, dstW, dstH int) *image.NRGBA {
 		return dst
 	}
 
-	// Two-pass: horizontal then vertical.
 	tmp := resizeH(img, dstW, srcH)
 	return resizeV(tmp, dstW, dstH)
 }
 
-const lanczosA = 3.0 // Lanczos-3 kernel support
+const lanczosA = 3.0
 
 func lanczosKernel(x float64) float64 {
 	if x == 0 {
@@ -75,6 +68,11 @@ func lanczosKernel(x float64) float64 {
 	return (lanczosA * math.Sin(xpi) * math.Sin(xpi/lanczosA)) / (xpi * xpi)
 }
 
+type weightEntry struct {
+	index  int
+	weight float64
+}
+
 // resizeH performs horizontal Lanczos resize with pre-multiplied alpha.
 func resizeH(src *image.NRGBA, dstW, dstH int) *image.NRGBA {
 	srcW := src.Bounds().Dx()
@@ -86,44 +84,8 @@ func resizeH(src *image.NRGBA, dstW, dstH int) *image.NRGBA {
 		support = lanczosA * ratio
 	}
 
-	// Precompute filter weights for each destination column.
-	type weightEntry struct {
-		index  int
-		weight float64
-	}
-	weights := make([][]weightEntry, dstW)
+	weights := precomputeWeights(dstW, srcW, ratio, support)
 
-	for dx := 0; dx < dstW; dx++ {
-		center := (float64(dx)+0.5)*ratio - 0.5
-		left := int(math.Ceil(center - support))
-		right := int(math.Floor(center + support))
-
-		if left < 0 {
-			left = 0
-		}
-		if right >= srcW {
-			right = srcW - 1
-		}
-
-		var wsum float64
-		entries := make([]weightEntry, 0, right-left+1)
-		for sx := left; sx <= right; sx++ {
-			w := lanczosKernel((float64(sx) - center) / math.Max(ratio, 1.0))
-			if w != 0 {
-				wsum += w
-				entries = append(entries, weightEntry{sx, w})
-			}
-		}
-		// Normalize.
-		if wsum != 0 {
-			for i := range entries {
-				entries[i].weight /= wsum
-			}
-		}
-		weights[dx] = entries
-	}
-
-	// Process rows in parallel.
 	parallelDo(0, dstH, func(y int) {
 		for dx := 0; dx < dstW; dx++ {
 			var r, g, b, a float64
@@ -142,13 +104,15 @@ func resizeH(src *image.NRGBA, dstW, dstH int) *image.NRGBA {
 			}
 
 			dstOff := y*dst.Stride + dx*4
-			if a != 0 {
+			// Phase 1 fix: guard against zero alpha from floating-point rounding.
+			if a > 0.5 {
 				inv := 1.0 / a
 				dst.Pix[dstOff] = clampF(r * inv)
 				dst.Pix[dstOff+1] = clampF(g * inv)
 				dst.Pix[dstOff+2] = clampF(b * inv)
 				dst.Pix[dstOff+3] = clampF(a)
 			}
+			// else: leave as zero (transparent black) — correct for truly transparent regions.
 		}
 	})
 
@@ -166,43 +130,8 @@ func resizeV(src *image.NRGBA, dstW, dstH int) *image.NRGBA {
 		support = lanczosA * ratio
 	}
 
-	// Precompute weights for each destination row.
-	type weightEntry struct {
-		index  int
-		weight float64
-	}
-	weights := make([][]weightEntry, dstH)
+	weights := precomputeWeights(dstH, srcH, ratio, support)
 
-	for dy := 0; dy < dstH; dy++ {
-		center := (float64(dy)+0.5)*ratio - 0.5
-		top := int(math.Ceil(center - support))
-		bottom := int(math.Floor(center + support))
-
-		if top < 0 {
-			top = 0
-		}
-		if bottom >= srcH {
-			bottom = srcH - 1
-		}
-
-		var wsum float64
-		entries := make([]weightEntry, 0, bottom-top+1)
-		for sy := top; sy <= bottom; sy++ {
-			w := lanczosKernel((float64(sy) - center) / math.Max(ratio, 1.0))
-			if w != 0 {
-				wsum += w
-				entries = append(entries, weightEntry{sy, w})
-			}
-		}
-		if wsum != 0 {
-			for i := range entries {
-				entries[i].weight /= wsum
-			}
-		}
-		weights[dy] = entries
-	}
-
-	// Process columns in parallel for better cache behavior.
 	parallelDo(0, dstW, func(x int) {
 		for dy := 0; dy < dstH; dy++ {
 			var r, g, b, a float64
@@ -220,7 +149,7 @@ func resizeV(src *image.NRGBA, dstW, dstH int) *image.NRGBA {
 			}
 
 			dstOff := dy*dst.Stride + x*4
-			if a != 0 {
+			if a > 0.5 {
 				inv := 1.0 / a
 				dst.Pix[dstOff] = clampF(r * inv)
 				dst.Pix[dstOff+1] = clampF(g * inv)
@@ -231,6 +160,42 @@ func resizeV(src *image.NRGBA, dstW, dstH int) *image.NRGBA {
 	})
 
 	return dst
+}
+
+// precomputeWeights builds filter weight tables for a single dimension.
+func precomputeWeights(dstSize, srcSize int, ratio, support float64) [][]weightEntry {
+	weights := make([][]weightEntry, dstSize)
+	filterScale := math.Max(ratio, 1.0)
+
+	for d := 0; d < dstSize; d++ {
+		center := (float64(d)+0.5)*ratio - 0.5
+		left := int(math.Ceil(center - support))
+		right := int(math.Floor(center + support))
+
+		if left < 0 {
+			left = 0
+		}
+		if right >= srcSize {
+			right = srcSize - 1
+		}
+
+		var wsum float64
+		entries := make([]weightEntry, 0, right-left+1)
+		for s := left; s <= right; s++ {
+			w := lanczosKernel((float64(s) - center) / filterScale)
+			if w != 0 {
+				wsum += w
+				entries = append(entries, weightEntry{s, w})
+			}
+		}
+		if wsum != 0 {
+			for i := range entries {
+				entries[i].weight /= wsum
+			}
+		}
+		weights[d] = entries
+	}
+	return weights
 }
 
 // parallelDo executes fn(i) for i in [start, stop) across multiple goroutines.
