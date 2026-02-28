@@ -7,45 +7,24 @@ import (
 
 // ImageStats contains analysis results for an image.
 type ImageStats struct {
-	// Width and Height in pixels.
-	Width, Height int
-
-	// HasAlpha indicates the image uses transparency.
-	HasAlpha bool
-
-	// IsGrayscale indicates all pixels have R == G == B.
-	IsGrayscale bool
-
-	// UniqueColors is the number of distinct colors (sampled for large images).
-	UniqueColors int
-
-	// Entropy measures information density (0-8 bits per channel).
-	// Low entropy = highly compressible, high entropy = complex/noisy.
-	Entropy float64
-
-	// EdgeDensity measures the proportion of edge pixels (0-1).
-	// High edge density = text/diagrams, low = photographs.
-	EdgeDensity float64
-
-	// MeanBrightness is the average luminance (0-255).
+	Width, Height  int
+	HasAlpha       bool
+	IsGrayscale    bool
+	UniqueColors   int
+	Entropy        float64
+	EdgeDensity    float64
 	MeanBrightness float64
+	Contrast       float64
 
-	// Contrast is the standard deviation of luminance (0-127.5).
-	Contrast float64
-
-	// RecommendedFormat based on the analysis.
-	RecommendedFormat Format
-
-	// RecommendedQuality based on the analysis.
-	RecommendedQuality Quality
-
-	// EstimatedCompression is the estimated achievable compression ratio.
+	RecommendedFormat    Format
+	RecommendedQuality   Quality
 	EstimatedCompression float64
 }
 
 // Analyze performs comprehensive image analysis to inform compression decisions.
+// Uses toNRGBARef for zero-copy when the input is already NRGBA.
 func Analyze(img image.Image) ImageStats {
-	src := toNRGBA(img)
+	src := toNRGBARef(img) // Phase 1 fix: no copy for read-only path.
 	w := src.Bounds().Dx()
 	h := src.Bounds().Dy()
 
@@ -105,33 +84,28 @@ func Analyze(img image.Image) ImageStats {
 	stats.UniqueColors = len(colorSet)
 	stats.MeanBrightness = brightSum / n
 
-	// Compute contrast (std dev of luminance).
+	// Phase 1 fix: compute contrast with consistent sampling.
+	// Use a fixed grid approach so the sample count matches the actual iterations.
+	stepY := int(math.Max(1, math.Ceil(float64(h)/100)))
+	stepX := int(math.Max(1, math.Ceil(float64(w)/100)))
+
 	var varianceSum float64
+	var sampleCount int
 	mean := stats.MeanBrightness
-	for y := 0; y < h; y += int(math.Max(1, float64(h)/100)) {
+
+	for y := 0; y < h; y += stepY {
 		off := y * src.Stride
-		for x := 0; x < w; x += int(math.Max(1, float64(w)/100)) {
+		for x := 0; x < w; x += stepX {
 			i := off + x*4
 			lum := 0.299*float64(src.Pix[i]) + 0.587*float64(src.Pix[i+1]) + 0.114*float64(src.Pix[i+2])
 			d := lum - mean
 			varianceSum += d * d
+			sampleCount++
 		}
 	}
-	sampleCount := float64(int(math.Max(1, float64(h)/100))) * float64(int(math.Max(1, float64(w)/100)))
-	if sampleCount == 0 {
-		sampleCount = 1
+	if sampleCount > 0 {
+		stats.Contrast = math.Sqrt(varianceSum / float64(sampleCount))
 	}
-	// Approximate sample count
-	sampledH := 0
-	for y := 0; y < h; y += int(math.Max(1, float64(h)/100)) {
-		sampledH++
-	}
-	sampledW := 0
-	for x := 0; x < w; x += int(math.Max(1, float64(w)/100)) {
-		sampledW++
-	}
-	sampleCount = float64(sampledH * sampledW)
-	stats.Contrast = math.Sqrt(varianceSum / sampleCount)
 
 	// Compute entropy from luminance histogram.
 	stats.Entropy = computeEntropy(histogram[:], n)
@@ -163,7 +137,6 @@ func computeEntropy(histogram []float64, total float64) float64 {
 }
 
 // computeEdgeDensity uses a Sobel operator to detect edges.
-// Returns the fraction of pixels that are edge pixels (0-1).
 func computeEdgeDensity(img *image.NRGBA) float64 {
 	w := img.Bounds().Dx()
 	h := img.Bounds().Dy()
@@ -172,18 +145,15 @@ func computeEdgeDensity(img *image.NRGBA) float64 {
 		return 0
 	}
 
-	// Sample for performance.
 	stepX := int(math.Max(1, float64(w)/200))
 	stepY := int(math.Max(1, float64(h)/200))
 
 	edgeCount := 0
 	totalCount := 0
-	threshold := 30.0 // Sobel magnitude threshold for edge detection.
+	threshold := 30.0
 
 	for y := 1; y < h-1; y += stepY {
 		for x := 1; x < w-1; x += stepX {
-			// Sobel X kernel: [-1 0 1; -2 0 2; -1 0 1]
-			// Sobel Y kernel: [-1 -2 -1; 0 0 0; 1 2 1]
 			gx := sobelLum(img, x+1, y-1) - sobelLum(img, x-1, y-1) +
 				2*sobelLum(img, x+1, y) - 2*sobelLum(img, x-1, y) +
 				sobelLum(img, x+1, y+1) - sobelLum(img, x-1, y+1)
@@ -219,22 +189,18 @@ func recommendFormat(stats ImageStats) Format {
 		return PNG
 	}
 	if stats.EdgeDensity > 0.3 && stats.UniqueColors < 1000 {
-		// Screenshots, text, diagrams — PNG compresses better.
 		return PNG
 	}
 	return JPEG
 }
 
 func recommendQuality(stats ImageStats) Quality {
-	// High entropy, low edge density = photographs → aggressive compression works.
 	if stats.Entropy > 6 && stats.EdgeDensity < 0.15 {
 		return Balanced
 	}
-	// Low entropy = simple images → can compress more aggressively.
 	if stats.Entropy < 4 {
 		return Aggressive
 	}
-	// High edge density = text/diagrams → need higher quality.
 	if stats.EdgeDensity > 0.25 {
 		return High
 	}
@@ -242,7 +208,6 @@ func recommendQuality(stats ImageStats) Quality {
 }
 
 func estimateCompression(stats ImageStats) float64 {
-	// Rough estimate based on image characteristics.
 	if stats.RecommendedFormat == PNG {
 		if stats.UniqueColors <= 256 {
 			return 5.0 + (256-float64(stats.UniqueColors))/50
@@ -253,17 +218,14 @@ func estimateCompression(stats ImageStats) float64 {
 		return 2.0
 	}
 
-	// JPEG estimate.
 	base := 10.0
 	if stats.Entropy > 7 {
 		base = 5.0
 	} else if stats.Entropy > 5 {
 		base = 8.0
 	}
-
 	if stats.EdgeDensity > 0.2 {
 		base *= 0.7
 	}
-
 	return base
 }
