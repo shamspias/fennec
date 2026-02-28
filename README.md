@@ -54,6 +54,7 @@ go install github.com/shamspias/fennec/cmd/fennec@latest
 ```go
 result, err := fennec.CompressFile(ctx, "photo.jpg", "optimized.jpg", fennec.DefaultOptions())
 // → JPEG Q=42 | 4032x3024 → 4032x3024 | 3.2 MB → 412 KB | SSIM: 0.9456 | Saved: 87.1%
+
 ```
 
 ### Server-side bytes → bytes
