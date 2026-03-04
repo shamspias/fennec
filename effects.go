@@ -6,7 +6,7 @@ import (
 )
 
 // Sharpen applies adaptive unsharp mask sharpening.
-// The strength parameter should be 0.0–1.0 (0.3 is a good default).
+// The strength parameter should be 0.0\u20131.0 (0.3 is a good default).
 func Sharpen(img *image.NRGBA, strength float64) *image.NRGBA {
 	if strength <= 0 {
 		return img
@@ -139,7 +139,7 @@ func gaussianBlur3x3(img *image.NRGBA) *image.NRGBA {
 }
 
 // GaussianBlur applies Gaussian blur with the specified sigma.
-// Uses separable convolution for O(n*r) instead of O(n*r²) complexity.
+// Uses separable convolution for O(n*r) instead of O(n*r\u00b2) complexity.
 func GaussianBlur(img *image.NRGBA, sigma float64) *image.NRGBA {
 	if sigma <= 0 {
 		return img
