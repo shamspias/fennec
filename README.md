@@ -106,6 +106,7 @@ fmt.Printf("\r%d/%d", done, total)
 summary := fennec.Summarize(results)
 fmt.Println(summary)
 // → Batch: 312/312 succeeded | 89.4 MB saved | Avg SSIM: 0.9523
+
 ```
 
 ### Progress callbacks & cancellation
