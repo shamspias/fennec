@@ -42,7 +42,7 @@ type BatchOptions struct {
 
 // CompressBatch compresses multiple image files concurrently using a worker pool.
 // Results are returned in the same order as the input items.
-// The context can be used to cancel the entire batch — in-flight items will
+// The context can be used to cancel the entire batch \u2014 in-flight items will
 // finish but no new items will be started.
 //
 // Example:
