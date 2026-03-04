@@ -11,10 +11,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 )
 
-// \u2500\u2500 Test Helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Test Helpers ────────────────────────────────────────────────────────────
 
 func makeTestImage(w, h int) *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
@@ -76,7 +77,7 @@ func makeStripedImage(w, h, stripeWidth int) *image.NRGBA {
 
 func ctx() context.Context { return context.Background() }
 
-// \u2500\u2500 SSIM Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── SSIM Tests ──────────────────────────────────────────────────────────────
 
 func TestSSIMIdentical(t *testing.T) {
 	img := makeTestImage(100, 100)
@@ -161,7 +162,7 @@ func TestMSSSIMSimilar(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Compression Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Compression Tests ───────────────────────────────────────────────────────
 
 func TestCompressImageJPEG(t *testing.T) {
 	img := makeTestImage(200, 200)
@@ -317,7 +318,7 @@ func TestCompressEmptyImage(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Sentinel Error Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Sentinel Error Tests ────────────────────────────────────────────────────
 
 func TestErrNoCompressedData(t *testing.T) {
 	r := &Result{}
@@ -337,7 +338,7 @@ func TestErrUnsupportedFormat(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Options.Validate Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Options.Validate Tests ──────────────────────────────────────────────────
 
 func TestOptionsValidate(t *testing.T) {
 	t.Run("valid_defaults", func(t *testing.T) {
@@ -402,7 +403,7 @@ func TestCompressInvalidOptions(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Context Cancellation Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Context Cancellation Tests ──────────────────────────────────────────────
 
 func TestCompressContextCancelled(t *testing.T) {
 	img := makeTestImage(200, 200)
@@ -415,7 +416,7 @@ func TestCompressContextCancelled(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 CompressBytes Test \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── CompressBytes Test ──────────────────────────────────────────────────────
 
 func TestCompressBytes(t *testing.T) {
 	img := makeTestImage(100, 100)
@@ -431,7 +432,7 @@ func TestCompressBytes(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Compress from io.Reader \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Compress from io.Reader ─────────────────────────────────────────────────
 
 func TestCompressFromReader(t *testing.T) {
 	img := makeTestImage(100, 100)
@@ -458,7 +459,7 @@ func TestCompressFromReaderInvalid(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Result.WriteTo Test \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Result.WriteTo Test ─────────────────────────────────────────────────────
 
 func TestResultWriteTo(t *testing.T) {
 	img := makeTestImage(100, 100)
@@ -482,7 +483,7 @@ func TestResultWriteTo(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Progress Callback Test \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Progress Callback Test ──────────────────────────────────────────────────
 
 func TestProgressCallback(t *testing.T) {
 	img := makeTestImage(100, 100)
@@ -504,7 +505,7 @@ func TestProgressCallback(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Resize Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Resize Tests ────────────────────────────────────────────────────────────
 
 func TestLanczosResize(t *testing.T) {
 	img := makeTestImage(100, 100)
@@ -558,7 +559,7 @@ func TestLanczosResizeZero(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Analysis Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Analysis Tests ──────────────────────────────────────────────────────────
 
 func TestAnalyze(t *testing.T) {
 	t.Run("gradient", func(t *testing.T) {
@@ -606,7 +607,7 @@ func TestAnalyze(t *testing.T) {
 	})
 }
 
-// \u2500\u2500 Effects Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Effects Tests ───────────────────────────────────────────────────────────
 
 func TestSharpen(t *testing.T) {
 	img := makeStripedImage(100, 100, 10)
@@ -734,7 +735,7 @@ func TestGaussianBlurLargeSigma(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Conversion Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Conversion Tests ────────────────────────────────────────────────────────
 
 func TestFormatAnalysis(t *testing.T) {
 	fewColors := image.NewNRGBA(image.Rect(0, 0, 100, 100))
@@ -796,7 +797,7 @@ func TestTryPalettize(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 EXIF Orientation Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── EXIF Orientation Tests ──────────────────────────────────────────────────
 
 func TestApplyOrientation(t *testing.T) {
 	img := image.NewNRGBA(image.Rect(0, 0, 100, 50))
@@ -838,7 +839,7 @@ func TestOrientationString(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Batch Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Batch Tests ─────────────────────────────────────────────────────────────
 
 func TestCompressBatchEmpty(t *testing.T) {
 	results := CompressBatch(ctx(), nil, BatchOptions{})
@@ -867,12 +868,13 @@ func TestCompressBatchWithFiles(t *testing.T) {
 		{Src: filepath.Join(tmpDir, "b.jpg"), Dst: filepath.Join(tmpDir, "b_out.jpg")},
 	}
 
-	var progressCalls int
+	var progressCalls int32 // Change this to int32 for atomic operations
+
 	results := CompressBatch(ctx(), items, BatchOptions{
 		Workers:     2,
 		DefaultOpts: DefaultOptions(),
 		OnItem: func(completed, total int) {
-			progressCalls++
+			atomic.AddInt32(&progressCalls, 1) // Safely increment the counter
 		},
 	})
 
@@ -892,8 +894,8 @@ func TestCompressBatchWithFiles(t *testing.T) {
 		}
 	}
 
-	if progressCalls != 2 {
-		t.Fatalf("expected 2 progress calls, got %d", progressCalls)
+	if atomic.LoadInt32(&progressCalls) != 2 { // Safely read the counter
+		t.Fatalf("expected 2 progress calls, got %d", atomic.LoadInt32(&progressCalls))
 	}
 }
 
@@ -983,7 +985,7 @@ func TestSummarizeEmpty(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Type Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Type Tests ──────────────────────────────────────────────────────────────
 
 func TestQualityString(t *testing.T) {
 	presets := map[Quality]string{
@@ -1112,7 +1114,7 @@ func TestBoxDownsampleZero(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Version Test \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Version Test ────────────────────────────────────────────────────────────
 
 func TestVersion(t *testing.T) {
 	if Version == "" {
@@ -1120,7 +1122,7 @@ func TestVersion(t *testing.T) {
 	}
 }
 
-// \u2500\u2500 Benchmarks \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Benchmarks ──────────────────────────────────────────────────────────────
 
 func BenchmarkSSIM(b *testing.B) {
 	img := makeTestImage(500, 500)
