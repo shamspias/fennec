@@ -3,15 +3,18 @@ package fennec
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"image/png"
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
-// ── Test Helpers ────────────────────────────────────────────────────────────
+// \u2500\u2500 Test Helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func makeTestImage(w, h int) *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
@@ -49,9 +52,31 @@ func makeSolidImage(w, h int, c color.NRGBA) *image.NRGBA {
 	return img
 }
 
+// makeStripedImage creates an image with alternating vertical stripes,
+// useful for testing edge-aware operations.
+func makeStripedImage(w, h, stripeWidth int) *image.NRGBA {
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			off := y*img.Stride + x*4
+			if (x/stripeWidth)%2 == 0 {
+				img.Pix[off] = 200
+				img.Pix[off+1] = 50
+				img.Pix[off+2] = 100
+			} else {
+				img.Pix[off] = 50
+				img.Pix[off+1] = 200
+				img.Pix[off+2] = 100
+			}
+			img.Pix[off+3] = 255
+		}
+	}
+	return img
+}
+
 func ctx() context.Context { return context.Background() }
 
-// ── SSIM Tests ──────────────────────────────────────────────────────────────
+// \u2500\u2500 SSIM Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func TestSSIMIdentical(t *testing.T) {
 	img := makeTestImage(100, 100)
@@ -110,7 +135,33 @@ func TestMSSSIM(t *testing.T) {
 	}
 }
 
-// ── Compression Tests ───────────────────────────────────────────────────────
+func TestMSSSIMDifferent(t *testing.T) {
+	img1 := makeSolidImage(128, 128, color.NRGBA{0, 0, 0, 255})
+	img2 := makeSolidImage(128, 128, color.NRGBA{255, 255, 255, 255})
+	msssim := MSSSIM(img1, img2)
+	if msssim > 0.1 {
+		t.Fatalf("MS-SSIM of black vs white should be very low, got %f", msssim)
+	}
+}
+
+func TestMSSSIMSimilar(t *testing.T) {
+	img := makeTestImage(128, 128)
+	// Slightly modify the image.
+	modified := image.NewNRGBA(image.Rect(0, 0, 128, 128))
+	copy(modified.Pix, img.Pix)
+	for i := 0; i < len(modified.Pix); i += 4 {
+		if modified.Pix[i] > 5 {
+			modified.Pix[i] -= 5
+		}
+	}
+
+	msssim := MSSSIM(img, modified)
+	if msssim < 0.7 || msssim >= 1.0 {
+		t.Fatalf("MS-SSIM of slightly modified image should be in [0.7, 1.0), got %f", msssim)
+	}
+}
+
+// \u2500\u2500 Compression Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func TestCompressImageJPEG(t *testing.T) {
 	img := makeTestImage(200, 200)
@@ -132,7 +183,6 @@ func TestCompressImageJPEG(t *testing.T) {
 	if result.JPEGQuality < 1 || result.JPEGQuality > 100 {
 		t.Fatalf("invalid JPEG quality: %d", result.JPEGQuality)
 	}
-	// Phase 1: verify CompressedData is populated.
 	if len(result.CompressedData) == 0 {
 		t.Fatal("CompressedData should not be empty")
 	}
@@ -251,6 +301,9 @@ func TestCompressNilImage(t *testing.T) {
 	if err == nil {
 		t.Fatal("should error on nil image")
 	}
+	if !errors.Is(err, ErrNilImage) {
+		t.Fatalf("expected ErrNilImage, got %v", err)
+	}
 }
 
 func TestCompressEmptyImage(t *testing.T) {
@@ -259,9 +312,97 @@ func TestCompressEmptyImage(t *testing.T) {
 	if err == nil {
 		t.Fatal("should error on empty image")
 	}
+	if !errors.Is(err, ErrEmptyImage) {
+		t.Fatalf("expected ErrEmptyImage, got %v", err)
+	}
 }
 
-// ── Context Cancellation Tests ──────────────────────────────────────────────
+// \u2500\u2500 Sentinel Error Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+func TestErrNoCompressedData(t *testing.T) {
+	r := &Result{}
+	var buf bytes.Buffer
+	_, err := r.WriteTo(&buf)
+	if !errors.Is(err, ErrNoCompressedData) {
+		t.Fatalf("expected ErrNoCompressedData, got %v", err)
+	}
+}
+
+func TestErrUnsupportedFormat(t *testing.T) {
+	img := makeTestImage(100, 100)
+	var buf bytes.Buffer
+	err := Encode(&buf, img, Format(99), DefaultOptions())
+	if !errors.Is(err, ErrUnsupportedFormat) {
+		t.Fatalf("expected ErrUnsupportedFormat, got %v", err)
+	}
+}
+
+// \u2500\u2500 Options.Validate Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+func TestOptionsValidate(t *testing.T) {
+	t.Run("valid_defaults", func(t *testing.T) {
+		opts := DefaultOptions()
+		if err := opts.Validate(); err != nil {
+			t.Fatalf("DefaultOptions should be valid: %v", err)
+		}
+	})
+
+	t.Run("negative_target_ssim", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.TargetSSIM = -0.5
+		if err := opts.Validate(); err == nil {
+			t.Fatal("negative TargetSSIM should be invalid")
+		}
+	})
+
+	t.Run("target_ssim_over_1", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.TargetSSIM = 1.5
+		if err := opts.Validate(); err == nil {
+			t.Fatal("TargetSSIM > 1.0 should be invalid")
+		}
+	})
+
+	t.Run("negative_target_size", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.TargetSize = -100
+		if err := opts.Validate(); err == nil {
+			t.Fatal("negative TargetSize should be invalid")
+		}
+	})
+
+	t.Run("negative_max_width", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.MaxWidth = -1
+		if err := opts.Validate(); err == nil {
+			t.Fatal("negative MaxWidth should be invalid")
+		}
+	})
+
+	t.Run("valid_custom", func(t *testing.T) {
+		opts := Options{
+			Quality:    High,
+			TargetSSIM: 0.98,
+			MaxWidth:   1920,
+			MaxHeight:  1080,
+		}
+		if err := opts.Validate(); err != nil {
+			t.Fatalf("valid custom options should pass: %v", err)
+		}
+	})
+}
+
+func TestCompressInvalidOptions(t *testing.T) {
+	img := makeTestImage(100, 100)
+	opts := DefaultOptions()
+	opts.TargetSSIM = -1
+	_, err := CompressImage(ctx(), img, opts)
+	if err == nil {
+		t.Fatal("should reject invalid options")
+	}
+}
+
+// \u2500\u2500 Context Cancellation Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func TestCompressContextCancelled(t *testing.T) {
 	img := makeTestImage(200, 200)
@@ -274,7 +415,7 @@ func TestCompressContextCancelled(t *testing.T) {
 	}
 }
 
-// ── CompressBytes Test ──────────────────────────────────────────────────────
+// \u2500\u2500 CompressBytes Test \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func TestCompressBytes(t *testing.T) {
 	img := makeTestImage(100, 100)
@@ -290,7 +431,34 @@ func TestCompressBytes(t *testing.T) {
 	}
 }
 
-// ── Result.WriteTo Test ─────────────────────────────────────────────────────
+// \u2500\u2500 Compress from io.Reader \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+func TestCompressFromReader(t *testing.T) {
+	img := makeTestImage(100, 100)
+	var buf bytes.Buffer
+	png.Encode(&buf, img)
+
+	result, err := Compress(ctx(), &buf, DefaultOptions())
+	if err != nil {
+		t.Fatalf("Compress failed: %v", err)
+	}
+	if len(result.CompressedData) == 0 {
+		t.Fatal("CompressedData should not be empty")
+	}
+	if result.FinalDimensions.X != 100 || result.FinalDimensions.Y != 100 {
+		t.Fatalf("unexpected dimensions: %dx%d", result.FinalDimensions.X, result.FinalDimensions.Y)
+	}
+}
+
+func TestCompressFromReaderInvalid(t *testing.T) {
+	r := bytes.NewReader([]byte("not an image"))
+	_, err := Compress(ctx(), r, DefaultOptions())
+	if err == nil {
+		t.Fatal("should error on invalid image data")
+	}
+}
+
+// \u2500\u2500 Result.WriteTo Test \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func TestResultWriteTo(t *testing.T) {
 	img := makeTestImage(100, 100)
@@ -314,7 +482,7 @@ func TestResultWriteTo(t *testing.T) {
 	}
 }
 
-// ── Progress Callback Test ──────────────────────────────────────────────────
+// \u2500\u2500 Progress Callback Test \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func TestProgressCallback(t *testing.T) {
 	img := makeTestImage(100, 100)
@@ -336,7 +504,7 @@ func TestProgressCallback(t *testing.T) {
 	}
 }
 
-// ── Resize Tests ────────────────────────────────────────────────────────────
+// \u2500\u2500 Resize Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func TestLanczosResize(t *testing.T) {
 	img := makeTestImage(100, 100)
@@ -382,7 +550,15 @@ func TestSmartResize(t *testing.T) {
 	}
 }
 
-// ── Analysis Tests ──────────────────────────────────────────────────────────
+func TestLanczosResizeZero(t *testing.T) {
+	img := makeTestImage(100, 100)
+	result := lanczosResize(img, 0, 50)
+	if result.Bounds().Dx() != 0 || result.Bounds().Dy() != 0 {
+		t.Fatal("resize with zero width should return empty image")
+	}
+}
+
+// \u2500\u2500 Analysis Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func TestAnalyze(t *testing.T) {
 	t.Run("gradient", func(t *testing.T) {
@@ -420,27 +596,20 @@ func TestAnalyze(t *testing.T) {
 			t.Fatal("should recommend PNG for alpha image")
 		}
 	})
+
+	t.Run("empty", func(t *testing.T) {
+		img := image.NewNRGBA(image.Rect(0, 0, 0, 0))
+		stats := Analyze(img)
+		if stats.Width != 0 || stats.Height != 0 {
+			t.Fatal("empty image should have zero dimensions")
+		}
+	})
 }
 
-// ── Effects Tests ───────────────────────────────────────────────────────────
+// \u2500\u2500 Effects Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func TestSharpen(t *testing.T) {
-	img := image.NewNRGBA(image.Rect(0, 0, 100, 100))
-	for y := 0; y < 100; y++ {
-		for x := 0; x < 100; x++ {
-			off := y*img.Stride + x*4
-			if (x/10)%2 == 0 {
-				img.Pix[off] = 200
-				img.Pix[off+1] = 50
-				img.Pix[off+2] = 100
-			} else {
-				img.Pix[off] = 50
-				img.Pix[off+1] = 200
-				img.Pix[off+2] = 100
-			}
-			img.Pix[off+3] = 255
-		}
-	}
+	img := makeStripedImage(100, 100, 10)
 
 	sharpened := Sharpen(img, 0.8)
 	if sharpened.Bounds() != img.Bounds() {
@@ -459,6 +628,70 @@ func TestSharpen(t *testing.T) {
 	}
 }
 
+func TestSharpenZeroStrength(t *testing.T) {
+	img := makeTestImage(100, 100)
+	result := Sharpen(img, 0)
+	// Should return the same pointer (no-op).
+	if result != img {
+		t.Fatal("Sharpen(0) should return original image unchanged")
+	}
+}
+
+func TestSharpenClampedStrength(t *testing.T) {
+	img := makeStripedImage(100, 100, 10)
+	// Strength > 1 should be clamped to 1.
+	result := Sharpen(img, 5.0)
+	if result.Bounds() != img.Bounds() {
+		t.Fatal("sharpen with high strength should preserve dimensions")
+	}
+}
+
+func TestSharpenTinyImage(t *testing.T) {
+	img := makeTestImage(2, 2)
+	result := Sharpen(img, 0.5)
+	// Image too small for sharpen, should return original.
+	if result != img {
+		t.Fatal("Sharpen on tiny image should return original")
+	}
+}
+
+func TestAdaptiveSharpen(t *testing.T) {
+	img := makeStripedImage(100, 100, 10)
+
+	sharpened := AdaptiveSharpen(img, 0.5)
+	if sharpened.Bounds() != img.Bounds() {
+		t.Fatal("adaptive sharpen should preserve dimensions")
+	}
+
+	// Should affect edge pixels more than smooth areas.
+	changed := false
+	for i := 0; i < len(img.Pix); i++ {
+		if img.Pix[i] != sharpened.Pix[i] {
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		t.Fatal("adaptive sharpen should change some pixels")
+	}
+}
+
+func TestAdaptiveSharpenZero(t *testing.T) {
+	img := makeTestImage(100, 100)
+	result := AdaptiveSharpen(img, 0)
+	if result != img {
+		t.Fatal("AdaptiveSharpen(0) should return original image unchanged")
+	}
+}
+
+func TestAdaptiveSharpenTinyImage(t *testing.T) {
+	img := makeTestImage(2, 2)
+	result := AdaptiveSharpen(img, 0.5)
+	if result != img {
+		t.Fatal("AdaptiveSharpen on tiny image should return original")
+	}
+}
+
 func TestGaussianBlur(t *testing.T) {
 	img := makeTestImage(100, 100)
 	blurred := GaussianBlur(img, 2.0)
@@ -471,7 +704,37 @@ func TestGaussianBlur(t *testing.T) {
 	}
 }
 
-// ── Conversion Tests ────────────────────────────────────────────────────────
+func TestGaussianBlurZeroSigma(t *testing.T) {
+	img := makeTestImage(100, 100)
+	result := GaussianBlur(img, 0)
+	// Should return the same pointer (no-op).
+	if result != img {
+		t.Fatal("GaussianBlur(0) should return original image unchanged")
+	}
+}
+
+func TestGaussianBlurNegativeSigma(t *testing.T) {
+	img := makeTestImage(100, 100)
+	result := GaussianBlur(img, -1.0)
+	if result != img {
+		t.Fatal("GaussianBlur(negative) should return original image unchanged")
+	}
+}
+
+func TestGaussianBlurLargeSigma(t *testing.T) {
+	img := makeTestImage(100, 100)
+	blurred := GaussianBlur(img, 20.0)
+	if blurred.Bounds() != img.Bounds() {
+		t.Fatal("large sigma blur should preserve dimensions")
+	}
+	// Large blur should reduce SSIM compared to identity.
+	ssim := SSIM(img, blurred)
+	if ssim > 0.999 {
+		t.Fatalf("large blur should noticeably reduce SSIM, got %f", ssim)
+	}
+}
+
+// \u2500\u2500 Conversion Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func TestFormatAnalysis(t *testing.T) {
 	fewColors := image.NewNRGBA(image.Rect(0, 0, 100, 100))
@@ -533,34 +796,194 @@ func TestTryPalettize(t *testing.T) {
 	}
 }
 
-// ── EXIF Orientation Tests ──────────────────────────────────────────────────
+// \u2500\u2500 EXIF Orientation Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func TestApplyOrientation(t *testing.T) {
 	img := image.NewNRGBA(image.Rect(0, 0, 100, 50))
-	// Mark top-left red.
 	img.Pix[0] = 255
 	img.Pix[3] = 255
 
-	// Normal — should be unchanged.
 	normal := ApplyOrientation(img, OrientNormal)
 	if normal.Bounds().Dx() != 100 || normal.Bounds().Dy() != 50 {
 		t.Fatal("normal should be 100x50")
 	}
 
-	// Rotate 90 CW — should swap dimensions.
 	rotated := ApplyOrientation(img, OrientRotate90CW)
 	if rotated.Bounds().Dx() != 50 || rotated.Bounds().Dy() != 100 {
 		t.Fatalf("90CW should be 50x100, got %dx%d", rotated.Bounds().Dx(), rotated.Bounds().Dy())
 	}
 
-	// Rotate 180 — should keep dimensions.
 	rot180 := ApplyOrientation(img, OrientRotate180)
 	if rot180.Bounds().Dx() != 100 || rot180.Bounds().Dy() != 50 {
 		t.Fatal("180 should be 100x50")
 	}
 }
 
-// ── Type Tests ──────────────────────────────────────────────────────────────
+func TestOrientationString(t *testing.T) {
+	cases := map[Orientation]string{
+		OrientNormal:      "Normal",
+		OrientFlipH:       "FlipHorizontal",
+		OrientRotate180:   "Rotate180",
+		OrientFlipV:       "FlipVertical",
+		OrientTranspose:   "Transpose",
+		OrientRotate90CW:  "Rotate90CW",
+		OrientTransverse:  "Transverse",
+		OrientRotate270CW: "Rotate270CW",
+		Orientation(99):   "Unknown",
+	}
+	for orient, want := range cases {
+		if got := orient.String(); got != want {
+			t.Fatalf("Orientation(%d).String() = %q, want %q", orient, got, want)
+		}
+	}
+}
+
+// \u2500\u2500 Batch Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+func TestCompressBatchEmpty(t *testing.T) {
+	results := CompressBatch(ctx(), nil, BatchOptions{})
+	if results != nil {
+		t.Fatal("empty batch should return nil")
+	}
+}
+
+func TestCompressBatchWithFiles(t *testing.T) {
+	// Create temp input files.
+	tmpDir := t.TempDir()
+
+	img := makeTestImage(100, 100)
+	for _, name := range []string{"a.jpg", "b.jpg"} {
+		path := filepath.Join(tmpDir, name)
+		f, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		jpeg.Encode(f, img, &jpeg.Options{Quality: 95})
+		f.Close()
+	}
+
+	items := []BatchItem{
+		{Src: filepath.Join(tmpDir, "a.jpg"), Dst: filepath.Join(tmpDir, "a_out.jpg")},
+		{Src: filepath.Join(tmpDir, "b.jpg"), Dst: filepath.Join(tmpDir, "b_out.jpg")},
+	}
+
+	var progressCalls int
+	results := CompressBatch(ctx(), items, BatchOptions{
+		Workers:     2,
+		DefaultOpts: DefaultOptions(),
+		OnItem: func(completed, total int) {
+			progressCalls++
+		},
+	})
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	for i, r := range results {
+		if r.Err != nil {
+			t.Fatalf("item %d failed: %v", i, r.Err)
+		}
+		if r.Result == nil {
+			t.Fatalf("item %d has nil result", i)
+		}
+		if r.Index != i {
+			t.Fatalf("item %d has wrong index %d", i, r.Index)
+		}
+	}
+
+	if progressCalls != 2 {
+		t.Fatalf("expected 2 progress calls, got %d", progressCalls)
+	}
+}
+
+func TestCompressBatchCancellation(t *testing.T) {
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	items := []BatchItem{
+		{Src: "/nonexistent/a.jpg", Dst: "/nonexistent/a_out.jpg"},
+	}
+	results := CompressBatch(cancelCtx, items, BatchOptions{
+		Workers:     1,
+		DefaultOpts: DefaultOptions(),
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Err == nil {
+		t.Fatal("expected error on cancelled context")
+	}
+}
+
+func TestCompressBatchBadInput(t *testing.T) {
+	items := []BatchItem{
+		{Src: "/nonexistent/file.jpg", Dst: "/tmp/out.jpg"},
+	}
+	results := CompressBatch(ctx(), items, BatchOptions{
+		Workers:     1,
+		DefaultOpts: DefaultOptions(),
+	})
+
+	if results[0].Err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+func TestSummarize(t *testing.T) {
+	results := []BatchResult{
+		{
+			Result: &Result{
+				OriginalSize:   1000,
+				CompressedSize: 500,
+				SSIM:           0.95,
+			},
+		},
+		{
+			Result: &Result{
+				OriginalSize:   2000,
+				CompressedSize: 800,
+				SSIM:           0.92,
+			},
+		},
+		{
+			Err: errors.New("test error"),
+		},
+	}
+
+	summary := Summarize(results)
+	if summary.Total != 3 {
+		t.Fatalf("expected total 3, got %d", summary.Total)
+	}
+	if summary.Succeeded != 2 {
+		t.Fatalf("expected 2 succeeded, got %d", summary.Succeeded)
+	}
+	if summary.Failed != 1 {
+		t.Fatalf("expected 1 failed, got %d", summary.Failed)
+	}
+	if summary.TotalSaved != 1700 {
+		t.Fatalf("expected 1700 saved, got %d", summary.TotalSaved)
+	}
+	expectedAvg := (0.95 + 0.92) / 2
+	if math.Abs(summary.AvgSSIM-expectedAvg) > 0.001 {
+		t.Fatalf("expected avg SSIM %f, got %f", expectedAvg, summary.AvgSSIM)
+	}
+
+	s := summary.String()
+	if len(s) == 0 {
+		t.Fatal("summary string should not be empty")
+	}
+}
+
+func TestSummarizeEmpty(t *testing.T) {
+	summary := Summarize(nil)
+	if summary.Total != 0 || summary.Succeeded != 0 {
+		t.Fatal("empty results should produce zero summary")
+	}
+}
+
+// \u2500\u2500 Type Tests \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func TestQualityString(t *testing.T) {
 	presets := map[Quality]string{
@@ -578,8 +1001,21 @@ func TestQualityString(t *testing.T) {
 	}
 }
 
+func TestFormatString(t *testing.T) {
+	cases := map[Format]string{
+		JPEG:      "JPEG",
+		PNG:       "PNG",
+		Auto:      "Auto",
+		Format(9): "Auto",
+	}
+	for f, want := range cases {
+		if got := f.String(); got != want {
+			t.Fatalf("Format(%d).String() = %q, want %q", f, got, want)
+		}
+	}
+}
+
 func TestDefaultQualityIsBalanced(t *testing.T) {
-	// Phase 1 fix: zero-value of Quality should be Balanced.
 	var q Quality
 	if q != Balanced {
 		t.Fatalf("zero-value Quality should be Balanced, got %s", q)
@@ -624,6 +1060,13 @@ func TestResultString(t *testing.T) {
 	}
 }
 
+func TestResultBytes(t *testing.T) {
+	r := Result{CompressedData: []byte{1, 2, 3}}
+	if len(r.Bytes()) != 3 {
+		t.Fatal("Bytes() should return compressed data")
+	}
+}
+
 func TestEncodeJPEG(t *testing.T) {
 	img := makeTestImage(100, 100)
 	var buf bytes.Buffer
@@ -661,7 +1104,23 @@ func TestBoxDownsample(t *testing.T) {
 	}
 }
 
-// ── Benchmarks ──────────────────────────────────────────────────────────────
+func TestBoxDownsampleZero(t *testing.T) {
+	img := makeTestImage(100, 100)
+	result := boxDownsample(img, 0, 0)
+	if result.Bounds().Dx() != 0 || result.Bounds().Dy() != 0 {
+		t.Fatal("zero dimensions should return empty image")
+	}
+}
+
+// \u2500\u2500 Version Test \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+func TestVersion(t *testing.T) {
+	if Version == "" {
+		t.Fatal("Version should not be empty")
+	}
+}
+
+// \u2500\u2500 Benchmarks \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 func BenchmarkSSIM(b *testing.B) {
 	img := makeTestImage(500, 500)
@@ -716,5 +1175,23 @@ func BenchmarkGaussianBlur(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		GaussianBlur(img, 2.0)
+	}
+}
+
+func BenchmarkAdaptiveSharpen(b *testing.B) {
+	img := makeStripedImage(500, 500, 10)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		AdaptiveSharpen(img, 0.5)
+	}
+}
+
+func BenchmarkMSSSIM(b *testing.B) {
+	img := makeTestImage(256, 256)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		MSSSIM(img, img)
 	}
 }
