@@ -28,6 +28,10 @@ import (
 // It reads EXIF orientation data and auto-rotates if opts.AutoOrient is true.
 // The context can be used to cancel long-running operations.
 func CompressFile(ctx context.Context, src, dst string, opts Options) (*Result, error) {
+	if err := opts.Validate(); err != nil {
+		return nil, err
+	}
+
 	if err := opts.reportProgress(ctx, StageAnalyzing, 0); err != nil {
 		return nil, err
 	}
@@ -74,12 +78,18 @@ func CompressFile(ctx context.Context, src, dst string, opts Options) (*Result, 
 // CompressImage compresses an already-decoded image.
 // The context can be used to cancel long-running operations.
 func CompressImage(ctx context.Context, img image.Image, opts Options) (*Result, error) {
+	if err := opts.Validate(); err != nil {
+		return nil, err
+	}
 	return compressImageInternal(ctx, img, OrientNormal, opts)
 }
 
 // Compress reads an image from r and returns the optimally compressed version.
 // The context can be used to cancel long-running operations.
 func Compress(ctx context.Context, r io.Reader, opts Options) (*Result, error) {
+	if err := opts.Validate(); err != nil {
+		return nil, err
+	}
 	img, _, err := image.Decode(r)
 	if err != nil {
 		return nil, fmt.Errorf("fennec: decode: %w", err)
@@ -96,12 +106,12 @@ func CompressBytes(ctx context.Context, data []byte, opts Options) (*Result, err
 // compressImageInternal is the shared compression pipeline.
 func compressImageInternal(ctx context.Context, img image.Image, orient Orientation, opts Options) (*Result, error) {
 	if img == nil {
-		return nil, fmt.Errorf("fennec: nil image")
+		return nil, ErrNilImage
 	}
 
 	bounds := img.Bounds()
 	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
-		return nil, fmt.Errorf("fennec: empty image (%dx%d)", bounds.Dx(), bounds.Dy())
+		return nil, ErrEmptyImage
 	}
 
 	result := &Result{
@@ -168,7 +178,7 @@ func compressImageInternal(ctx context.Context, img image.Image, orient Orientat
 		return nil, err
 	}
 
-	var compressed safeBuffer
+	var compressed encodingBuffer
 
 	switch opts.Format {
 	case PNG:
@@ -189,7 +199,7 @@ func compressImageInternal(ctx context.Context, img image.Image, orient Orientat
 			compressed.Write(cachedData)
 		}
 	default:
-		return nil, fmt.Errorf("fennec: unsupported format")
+		return nil, ErrUnsupportedFormat
 	}
 
 	if err := opts.reportProgress(ctx, StageEncoding, 0.9); err != nil {
@@ -203,8 +213,9 @@ func compressImageInternal(ctx context.Context, img image.Image, orient Orientat
 	return result, nil
 }
 
-// safeBuffer is a bytes.Buffer wrapper that satisfies io.Writer.
-// Exists to make the linter happy about return values.
-type safeBuffer struct {
+// encodingBuffer is a bytes.Buffer wrapper that satisfies io.Writer.
+// Named to reflect its purpose: buffering encoded image data during compression.
+// It is NOT safe for concurrent use.
+type encodingBuffer struct {
 	bytes.Buffer
 }
