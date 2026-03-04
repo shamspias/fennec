@@ -49,7 +49,7 @@ func SSIMFast(img1, img2 *image.NRGBA) float64 {
 	w := img1.Bounds().Dx()
 	h := img1.Bounds().Dy()
 
-	maxDim := 512 // Phase 2: was 256, increased for accuracy.
+	maxDim := 512
 	if w > maxDim || h > maxDim {
 		scale := float64(maxDim) / math.Max(float64(w), float64(h))
 		newW := int(math.Max(8, math.Round(float64(w)*scale)))
