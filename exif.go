@@ -20,6 +20,30 @@ const (
 	OrientRotate270CW Orientation = 8
 )
 
+// String returns a human-readable name for the EXIF orientation.
+func (o Orientation) String() string {
+	switch o {
+	case OrientNormal:
+		return "Normal"
+	case OrientFlipH:
+		return "FlipHorizontal"
+	case OrientRotate180:
+		return "Rotate180"
+	case OrientFlipV:
+		return "FlipVertical"
+	case OrientTranspose:
+		return "Transpose"
+	case OrientRotate90CW:
+		return "Rotate90CW"
+	case OrientTransverse:
+		return "Transverse"
+	case OrientRotate270CW:
+		return "Rotate270CW"
+	default:
+		return "Unknown"
+	}
+}
+
 // ReadOrientation reads the EXIF orientation tag from a JPEG stream.
 // Returns OrientNormal (1) if no orientation is found or the file is not JPEG.
 // This is a minimal parser that only reads the orientation tag — it does not
