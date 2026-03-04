@@ -9,7 +9,7 @@ import (
 
 func ExampleCompressFile() {
 	ctx := context.Background()
-	opts := fennec.DefaultOptions() // Balanced preset, SSIM ≥ 0.94
+	opts := fennec.DefaultOptions()
 
 	result, err := fennec.CompressFile(ctx, "photo.jpg", "optimized.jpg", opts)
 	if err != nil {
@@ -27,7 +27,7 @@ func ExampleCompressImage() {
 	}
 
 	opts := fennec.DefaultOptions()
-	opts.Quality = fennec.High // SSIM ≥ 0.97
+	opts.Quality = fennec.High
 	opts.MaxWidth = 1920
 
 	result, err := fennec.CompressImage(ctx, img, opts)
@@ -39,16 +39,14 @@ func ExampleCompressImage() {
 
 func ExampleCompressBytes() {
 	ctx := context.Background()
-
-	// Common server-side pattern: receive bytes, compress, return bytes.
-	inputData := []byte{} // ... from HTTP request, S3, etc.
+	inputData := []byte{}
 
 	result, err := fennec.CompressBytes(ctx, inputData, fennec.DefaultOptions())
 	if err != nil {
 		panic(err)
 	}
 
-	outputData := result.Bytes() // Ready to write to response or storage.
+	outputData := result.Bytes()
 	_ = outputData
 }
 
