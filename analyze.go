@@ -24,7 +24,7 @@ type ImageStats struct {
 // Analyze performs comprehensive image analysis to inform compression decisions.
 // Uses toNRGBARef for zero-copy when the input is already NRGBA.
 func Analyze(img image.Image) ImageStats {
-	src := toNRGBARef(img) // Phase 1 fix: no copy for read-only path.
+	src := toNRGBARef(img)
 	w := src.Bounds().Dx()
 	h := src.Bounds().Dy()
 
@@ -84,8 +84,7 @@ func Analyze(img image.Image) ImageStats {
 	stats.UniqueColors = len(colorSet)
 	stats.MeanBrightness = brightSum / n
 
-	// Phase 1 fix: compute contrast with consistent sampling.
-	// Use a fixed grid approach so the sample count matches the actual iterations.
+	// Compute contrast with consistent fixed-grid sampling.
 	stepY := int(math.Max(1, math.Ceil(float64(h)/100)))
 	stepX := int(math.Max(1, math.Ceil(float64(w)/100)))
 
