@@ -104,7 +104,6 @@ func resizeH(src *image.NRGBA, dstW, dstH int) *image.NRGBA {
 			}
 
 			dstOff := y*dst.Stride + dx*4
-			// Phase 1 fix: guard against zero alpha from floating-point rounding.
 			if a > 0.5 {
 				inv := 1.0 / a
 				dst.Pix[dstOff] = clampF(r * inv)
@@ -112,7 +111,6 @@ func resizeH(src *image.NRGBA, dstW, dstH int) *image.NRGBA {
 				dst.Pix[dstOff+2] = clampF(b * inv)
 				dst.Pix[dstOff+3] = clampF(a)
 			}
-			// else: leave as zero (transparent black) — correct for truly transparent regions.
 		}
 	})
 
