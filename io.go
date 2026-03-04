@@ -124,14 +124,14 @@ func Encode(w io.Writer, img image.Image, format Format, opts Options) error {
 	case PNG:
 		return compressPNG(src, w, opts)
 	default:
-		return fmt.Errorf("fennec: unsupported format for Encode (use JPEG or PNG)")
+		return fmt.Errorf("fennec: %w for Encode (use JPEG or PNG)", ErrUnsupportedFormat)
 	}
 }
 
 // encodeToBytes encodes an image to bytes in the specified format.
 // Used internally when CompressedData is missing.
 func encodeToBytes(img *image.NRGBA, format Format, quality int) ([]byte, error) {
-	var buf safeBuffer
+	var buf encodingBuffer
 	switch format {
 	case JPEG:
 		if err := encodeJPEG(&buf, img, quality, false); err != nil {
@@ -143,13 +143,20 @@ func encodeToBytes(img *image.NRGBA, format Format, quality int) ([]byte, error)
 			return nil, fmt.Errorf("fennec: PNG encode: %w", err)
 		}
 	default:
-		return nil, fmt.Errorf("fennec: unsupported format")
+		return nil, ErrUnsupportedFormat
 	}
 	return buf.Bytes(), nil
 }
 
 // encodeJPEG handles JPEG encoding, using RGBA for opaque images (faster path).
+//
+// The subsample parameter is accepted for API forward-compatibility but currently
+// has no effect: Go's stdlib image/jpeg encoder always uses 4:2:0 chroma
+// subsampling and does not expose a toggle. When a custom encoder is added in a
+// future version, this parameter will control the subsampling mode.
 func encodeJPEG(w io.Writer, img *image.NRGBA, quality int, subsample bool) error {
+	_ = subsample // Reserved for future custom encoder; stdlib always uses 4:2:0.
+
 	if isOpaque(img) {
 		rgba := &image.RGBA{
 			Pix:    img.Pix,
