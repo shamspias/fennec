@@ -2,13 +2,32 @@ package fennec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"io"
 )
 
 // Version is the library version.
-const Version = "2.0.0"
+const Version = "2.1.0"
+
+// ── Sentinel Errors ─────────────────────────────────────────────────────────
+
+// Sentinel errors for programmatic error handling via errors.Is().
+var (
+	// ErrNilImage is returned when a nil image is passed to a compression function.
+	ErrNilImage = errors.New("fennec: nil image")
+
+	// ErrEmptyImage is returned when the image has zero width or height.
+	ErrEmptyImage = errors.New("fennec: empty image")
+
+	// ErrNoCompressedData is returned when WriteTo is called on a Result
+	// that has no compressed data.
+	ErrNoCompressedData = errors.New("fennec: no compressed data available")
+
+	// ErrUnsupportedFormat is returned when an unknown format is specified.
+	ErrUnsupportedFormat = errors.New("fennec: unsupported format")
+)
 
 // Format represents an output image format.
 type Format int
@@ -127,6 +146,10 @@ type Options struct {
 	// Subsample enables chroma subsampling for JPEG (default: true).
 	// This exploits the fact that human eyes are less sensitive to
 	// color detail than luminance detail.
+	//
+	// Note: Go's stdlib JPEG encoder does not expose a subsampling toggle.
+	// This field is reserved for future use with custom encoders. Currently,
+	// it is accepted but has no effect on the encoded output.
 	Subsample bool
 
 	// TargetSSIM overrides the Quality preset with a custom SSIM target.
@@ -154,6 +177,28 @@ func DefaultOptions() Options {
 		Subsample:  true,
 		AutoOrient: true,
 	}
+}
+
+// Validate checks that the Options values are within acceptable ranges.
+// Returns nil if all fields are valid. This is called automatically by the
+// compression functions, but can be called manually for early validation.
+func (o *Options) Validate() error {
+	if o.MaxWidth < 0 {
+		return fmt.Errorf("fennec: MaxWidth must be >= 0, got %d", o.MaxWidth)
+	}
+	if o.MaxHeight < 0 {
+		return fmt.Errorf("fennec: MaxHeight must be >= 0, got %d", o.MaxHeight)
+	}
+	if o.TargetSSIM < 0 || o.TargetSSIM > 1.0 {
+		return fmt.Errorf("fennec: TargetSSIM must be in [0.0, 1.0], got %f", o.TargetSSIM)
+	}
+	if o.TargetSize < 0 {
+		return fmt.Errorf("fennec: TargetSize must be >= 0, got %d", o.TargetSize)
+	}
+	if o.Format < Auto || o.Format > PNG {
+		return fmt.Errorf("fennec: invalid Format %d", o.Format)
+	}
+	return nil
 }
 
 // reportProgress safely invokes the progress callback if set.
@@ -212,9 +257,10 @@ type Result struct {
 // WriteTo writes the compressed image data to w.
 // This writes the exact bytes that were produced by the compression engine,
 // preserving target-size precision.
+// Returns ErrNoCompressedData if CompressedData is empty.
 func (r *Result) WriteTo(w io.Writer) (int64, error) {
 	if len(r.CompressedData) == 0 {
-		return 0, fmt.Errorf("fennec: no compressed data available")
+		return 0, ErrNoCompressedData
 	}
 	n, err := w.Write(r.CompressedData)
 	return int64(n), err
