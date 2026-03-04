@@ -40,19 +40,19 @@ func convertToNRGBA(img image.Image) *image.NRGBA {
 			r, g, b, a := img.At(x, y).RGBA()
 			off := (y-bounds.Min.Y)*dst.Stride + (x-bounds.Min.X)*4
 			if a == 0 {
-				// Fully transparent — zero everything.
+				// Fully transparent \u2014 zero everything.
 				dst.Pix[off] = 0
 				dst.Pix[off+1] = 0
 				dst.Pix[off+2] = 0
 				dst.Pix[off+3] = 0
 			} else if a == 0xffff {
-				// Fully opaque — simple shift.
+				// Fully opaque \u2014 simple shift.
 				dst.Pix[off] = uint8(r >> 8)
 				dst.Pix[off+1] = uint8(g >> 8)
 				dst.Pix[off+2] = uint8(b >> 8)
 				dst.Pix[off+3] = 0xff
 			} else {
-				// Semi-transparent — un-premultiply alpha.
+				// Semi-transparent \u2014 un-premultiply alpha.
 				dst.Pix[off] = uint8(((r * 0xffff) / a) >> 8)
 				dst.Pix[off+1] = uint8(((g * 0xffff) / a) >> 8)
 				dst.Pix[off+2] = uint8(((b * 0xffff) / a) >> 8)
@@ -100,8 +100,8 @@ func toGray(img *image.NRGBA) *image.Gray {
 }
 
 // analyzeFormat examines the image to determine the best output format.
-// Images with transparency or very few colors → PNG.
-// Photographic images with many colors → JPEG.
+// Images with transparency or very few colors \u2192 PNG.
+// Photographic images with many colors \u2192 JPEG.
 func analyzeFormat(img *image.NRGBA) Format {
 	bounds := img.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
@@ -182,7 +182,7 @@ func abs64(x int64) int64 {
 	return x
 }
 
-// rotateNRGBA90CW rotates an NRGBA image 90° clockwise.
+// rotateNRGBA90CW rotates an NRGBA image 90\u00b0 clockwise.
 func rotateNRGBA90CW(img *image.NRGBA) *image.NRGBA {
 	w := img.Bounds().Dx()
 	h := img.Bounds().Dy()
@@ -197,7 +197,7 @@ func rotateNRGBA90CW(img *image.NRGBA) *image.NRGBA {
 	return dst
 }
 
-// rotateNRGBA180 rotates an NRGBA image 180°.
+// rotateNRGBA180 rotates an NRGBA image 180\u00b0.
 func rotateNRGBA180(img *image.NRGBA) *image.NRGBA {
 	w := img.Bounds().Dx()
 	h := img.Bounds().Dy()
@@ -212,7 +212,7 @@ func rotateNRGBA180(img *image.NRGBA) *image.NRGBA {
 	return dst
 }
 
-// rotateNRGBA270CW rotates an NRGBA image 270° clockwise (90° counter-clockwise).
+// rotateNRGBA270CW rotates an NRGBA image 270\u00b0 clockwise (90\u00b0 counter-clockwise).
 func rotateNRGBA270CW(img *image.NRGBA) *image.NRGBA {
 	w := img.Bounds().Dx()
 	h := img.Bounds().Dy()
