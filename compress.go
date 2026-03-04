@@ -56,13 +56,13 @@ func compressJPEGOptimal(src *image.NRGBA, w io.Writer, targetSSIM float64, opts
 		ssim := SSIMFast(src, decodedNRGBA)
 
 		if ssim >= targetSSIM {
-			// Quality is sufficient — cache this result and try lower quality.
+			// Quality is sufficient \u2014 cache this result and try lower quality.
 			bestQuality = mid
 			bestSSIM = ssim
 			bestData = copyBytes(buf.Bytes())
 			hi = mid - 1
 		} else {
-			// Quality too low — increase quality.
+			// Quality too low \u2014 increase quality.
 			lo = mid + 1
 		}
 	}
@@ -128,7 +128,7 @@ func compressPNG(img *image.NRGBA, w io.Writer, opts Options) error {
 		return encoder.Encode(w, paletted)
 	}
 
-	// Check if image is grayscale — use Gray format for ~3× savings.
+	// Check if image is grayscale \u2014 use Gray format for ~3\u00d7 savings.
 	if isGrayscale(img) {
 		gray := toGray(img)
 		encoder := png.Encoder{CompressionLevel: png.BestCompression}
