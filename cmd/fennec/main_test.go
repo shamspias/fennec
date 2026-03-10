@@ -171,6 +171,58 @@ func TestCLITargetSize(t *testing.T) {
 	}
 }
 
+func TestCLITargetSizeHumanReadable(t *testing.T) {
+	binary := buildBinary(t)
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "input.jpg")
+	dst := filepath.Join(tmpDir, "output.jpg")
+	createTestJPEG(t, src)
+
+	// Test with human-readable size "5KB".
+	cmd := exec.Command(binary, "-target-size", "5KB", src, dst)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("CLI target-size with KB failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(dst); os.IsNotExist(err) {
+		t.Fatal("Output not created")
+	}
+}
+
+func TestCLISSIMFlag(t *testing.T) {
+	binary := buildBinary(t)
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "input.jpg")
+	dst := filepath.Join(tmpDir, "output.jpg")
+	createTestJPEG(t, src)
+
+	cmd := exec.Command(binary, "-ssim", "0.98", src, dst)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("CLI -ssim flag failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(dst); os.IsNotExist(err) {
+		t.Fatal("Output not created")
+	}
+}
+
+func TestCLINoOrientFlag(t *testing.T) {
+	binary := buildBinary(t)
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "input.jpg")
+	dst := filepath.Join(tmpDir, "output.jpg")
+	createTestJPEG(t, src)
+
+	cmd := exec.Command(binary, "-no-orient", src, dst)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("CLI -no-orient flag failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(dst); os.IsNotExist(err) {
+		t.Fatal("Output not created")
+	}
+}
+
 func TestCLINoArgs(t *testing.T) {
 	binary := buildBinary(t)
 	cmd := exec.Command(binary)
@@ -214,5 +266,43 @@ func TestCLIAutoOutput(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("CLI auto-output failed: %v\n%s", err, out)
+	}
+}
+
+func TestParseSize(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int
+		err   bool
+	}{
+		{"", 0, false},
+		{"0", 0, false},
+		{"5000", 5000, false},
+		{"100KB", 102400, false},
+		{"100kb", 102400, false},
+		{"2MB", 2097152, false},
+		{"1.5MB", 1572864, false},
+		{"500B", 500, false},
+		{"1GB", 1073741824, false},
+		{"invalid", 0, true},
+		{"KB", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := parseSize(tt.input)
+			if tt.err {
+				if err == nil {
+					t.Fatalf("parseSize(%q) expected error, got %d", tt.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseSize(%q) unexpected error: %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseSize(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
 	}
 }
