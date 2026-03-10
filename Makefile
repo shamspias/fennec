@@ -1,5 +1,5 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# Fennec — Intelligent Image Compression Library  v1.0.2
+# Fennec — Intelligent Image Compression Library  v1.0.3
 # ──────────────────────────────────────────────────────────────────────────────
 
 .PHONY: all build test test-unit test-integration test-race test-cover \
@@ -62,7 +62,7 @@ clean:
 # ─── Help ─────────────────────────────────────────────────────────────────────
 
 help:
-	@echo "Fennec v1.0.2 — Development Commands"
+	@echo "Fennec v1.0.3— Development Commands"
 	@echo ""
 	@echo "  make              Run fmt + vet + test + build (default)"
 	@echo "  make build        Build the CLI → bin/fennec"
