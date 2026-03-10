@@ -108,23 +108,23 @@ func parseAPP1(r io.ReadSeeker, segLen int) Orientation {
 		return OrientNormal
 	}
 
-	// Read the segment data.
 	data := make([]byte, segLen)
 	if _, err := io.ReadFull(r, data); err != nil {
 		return OrientNormal
 	}
 
-	// Check for "Exif\0\0" header.
 	if len(data) < 6 || string(data[:4]) != "Exif" || data[4] != 0 || data[5] != 0 {
 		return OrientNormal
 	}
 
-	tiff := data[6:]
+	return parseTIFFOrientation(data[6:])
+}
+
+func parseTIFFOrientation(tiff []byte) Orientation {
 	if len(tiff) < 8 {
 		return OrientNormal
 	}
 
-	// Determine byte order from TIFF header.
 	var bo binary.ByteOrder
 	switch string(tiff[:2]) {
 	case "II":
@@ -135,22 +135,22 @@ func parseAPP1(r io.ReadSeeker, segLen int) Orientation {
 		return OrientNormal
 	}
 
-	// Verify TIFF magic number (42).
 	if bo.Uint16(tiff[2:4]) != 42 {
 		return OrientNormal
 	}
 
-	// Get offset to first IFD.
 	ifdOffset := int(bo.Uint32(tiff[4:8]))
 	if ifdOffset < 8 || ifdOffset+2 > len(tiff) {
 		return OrientNormal
 	}
 
-	// Read IFD0 entry count.
+	return scanIFDForOrientation(tiff, ifdOffset, bo)
+}
+
+func scanIFDForOrientation(tiff []byte, ifdOffset int, bo binary.ByteOrder) Orientation {
 	entryCount := int(bo.Uint16(tiff[ifdOffset : ifdOffset+2]))
 	ifdOffset += 2
 
-	// Scan IFD entries for orientation tag (0x0112).
 	for i := 0; i < entryCount; i++ {
 		entryOff := ifdOffset + i*12
 		if entryOff+12 > len(tiff) {
@@ -170,7 +170,6 @@ func parseAPP1(r io.ReadSeeker, segLen int) Orientation {
 			return OrientNormal
 		}
 	}
-
 	return OrientNormal
 }
 

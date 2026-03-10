@@ -24,62 +24,36 @@ type sizeResult struct {
 }
 
 func hitTargetSize(ctx context.Context, original *image.NRGBA, targetBytes int, opts Options) (*sizeResult, error) {
-	w := original.Bounds().Dx()
-	h := original.Bounds().Dy()
-
 	wantPNG := opts.Format == PNG
 	wantJPEG := opts.Format == JPEG
 	canUseJPEG := !wantPNG && isOpaque(original)
 
 	var candidates []*sizeResult
 
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Strategy 1: JPEG quality binary search.
-	if canUseJPEG || wantJPEG {
-		if r, err := jpegQualitySearch(original, targetBytes); err == nil && r != nil {
-			if r.quality >= minJPEGQuality {
-				candidates = append(candidates, r)
-			}
+	if (canUseJPEG || wantJPEG) && ctx.Err() == nil {
+		if r, err := jpegQualitySearch(original, targetBytes); err == nil && r != nil && r.quality >= minJPEGQuality {
+			candidates = append(candidates, r)
 		}
 	}
 
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Strategy 2: Color quantization → indexed PNG.
-	if !wantJPEG {
+	if !wantJPEG && ctx.Err() == nil {
 		if r, err := quantizeStrategy(original, targetBytes); err == nil && r != nil {
 			candidates = append(candidates, r)
 		}
 	}
 
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Strategy 3: JPEG quality + scale.
-	if canUseJPEG || wantJPEG {
+	if (canUseJPEG || wantJPEG) && ctx.Err() == nil {
 		if r, err := jpegQualityScaleSearch(ctx, original, targetBytes); err == nil && r != nil {
 			candidates = append(candidates, r)
 		}
 	}
 
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Strategy 4: Scale search (last resort).
-	if len(candidates) == 0 {
+	if len(candidates) == 0 && ctx.Err() == nil {
 		format := opts.Format
 		if format == Auto {
+			format = PNG
 			if canUseJPEG {
 				format = JPEG
-			} else {
-				format = PNG
 			}
 		}
 		if r, err := scaleSearch(ctx, original, targetBytes, format); err == nil && r != nil {
@@ -88,24 +62,7 @@ func hitTargetSize(ctx context.Context, original *image.NRGBA, targetBytes int, 
 	}
 
 	if len(candidates) == 0 {
-		// Last-resort fallback: encode at minimum quality / default compression.
-		var buf bytes.Buffer
-		if canUseJPEG || wantJPEG {
-			if err := encodeJPEG(&buf, original, 1, false); err != nil {
-				return nil, fmt.Errorf("fennec: fallback JPEG encode: %w", err)
-			}
-			return &sizeResult{
-				data: buf.Bytes(), format: JPEG, quality: 1,
-				ssim: computeSSIMNRGBA(original, original), finalW: w, finalH: h, img: original,
-			}, nil
-		}
-		if err := compressPNG(original, &buf, opts); err != nil {
-			return nil, fmt.Errorf("fennec: fallback PNG encode: %w", err)
-		}
-		return &sizeResult{
-			data: buf.Bytes(), format: PNG,
-			ssim: 1.0, finalW: w, finalH: h, img: original,
-		}, nil
+		return fallbackTargetSizeEncode(original, targetBytes, canUseJPEG || wantJPEG, opts)
 	}
 
 	var best *sizeResult
@@ -114,8 +71,22 @@ func hitTargetSize(ctx context.Context, original *image.NRGBA, targetBytes int, 
 			best = c
 		}
 	}
-
 	return best, nil
+}
+
+func fallbackTargetSizeEncode(original *image.NRGBA, target int, useJPEG bool, opts Options) (*sizeResult, error) {
+	w, h := original.Bounds().Dx(), original.Bounds().Dy()
+	var buf bytes.Buffer
+	if useJPEG {
+		if err := encodeJPEG(&buf, original, 1, false); err != nil {
+			return nil, fmt.Errorf("fennec: fallback JPEG encode: %w", err)
+		}
+		return &sizeResult{data: buf.Bytes(), format: JPEG, quality: 1, ssim: computeSSIMNRGBA(original, original), finalW: w, finalH: h, img: original}, nil
+	}
+	if err := compressPNG(original, &buf, opts); err != nil {
+		return nil, fmt.Errorf("fennec: fallback PNG encode: %w", err)
+	}
+	return &sizeResult{data: buf.Bytes(), format: PNG, ssim: 1.0, finalW: w, finalH: h, img: original}, nil
 }
 
 func betterFit(candidate, current *sizeResult, target int) bool {
@@ -237,67 +208,9 @@ func quantizeStrategy(src *image.NRGBA, targetBytes int) (*sizeResult, error) {
 // ── Strategy 3 ──────────────────────────────────────────────────────────────
 
 func jpegQualityScaleSearch(ctx context.Context, src *image.NRGBA, targetBytes int) (*sizeResult, error) {
-	origW := src.Bounds().Dx()
-	origH := src.Bounds().Dy()
-
-	type candidate struct {
-		scale   float64
-		quality int
-		size    int
-	}
-	var bestCand *candidate
-
-	loScale, hiScale := 0.05, 1.0
-
-	for i := 0; i < 10; i++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		midScale := (loScale + hiScale) / 2
-		newW := int(float64(origW) * midScale)
-		newH := int(float64(origH) * midScale)
-		if newW < 8 || newH < 8 {
-			loScale = midScale
-			continue
-		}
-
-		scaled := boxDownsample(src, newW, newH)
-		r, err := jpegQualitySearchFast(scaled, targetBytes)
-		if err != nil || r == nil {
-			hiScale = midScale
-			continue
-		}
-
-		if int64(len(r.data)) <= int64(targetBytes) && r.quality >= minJPEGQuality {
-			bestCand = &candidate{scale: midScale, quality: r.quality, size: len(r.data)}
-			loScale = midScale
-		} else {
-			hiScale = midScale
-		}
-	}
-
-	for _, scale := range []float64{0.75, 0.50, 0.375, 0.25} {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		newW := int(float64(origW) * scale)
-		newH := int(float64(origH) * scale)
-		if newW < 8 || newH < 8 {
-			continue
-		}
-		scaled := boxDownsample(src, newW, newH)
-		r, err := jpegQualitySearchFast(scaled, targetBytes)
-		if err != nil || r == nil || int64(len(r.data)) > int64(targetBytes) {
-			continue
-		}
-		if r.quality < minJPEGQuality {
-			continue
-		}
-		if bestCand == nil || scale > bestCand.scale {
-			bestCand = &candidate{scale: scale, quality: r.quality, size: len(r.data)}
-		}
-	}
+	origW, origH := src.Bounds().Dx(), src.Bounds().Dy()
+	bestCand := findBestScaleBinary(ctx, src, origW, origH, targetBytes)
+	bestCand = findBestScaleFixed(ctx, src, origW, origH, targetBytes, bestCand)
 
 	if bestCand == nil {
 		return nil, nil
@@ -308,70 +221,85 @@ func jpegQualityScaleSearch(ctx context.Context, src *image.NRGBA, targetBytes i
 	finalScaled := lanczosResize(src, finalW, finalH)
 
 	r, err := jpegQualitySearch(finalScaled, targetBytes)
-	if err != nil || r == nil {
-		return nil, nil
-	}
-	if r.quality < minJPEGQuality {
+	if err != nil || r == nil || r.quality < minJPEGQuality {
 		return nil, nil
 	}
 
 	r.ssim = computeSSIMNRGBA(src, finalScaled)
-	r.finalW = finalW
-	r.finalH = finalH
+	r.finalW, r.finalH = finalW, finalH
 	r.img = finalScaled
-
 	return r, nil
+}
+
+type scaleCandidate struct {
+	scale   float64
+	quality int
+	size    int
+}
+
+func findBestScaleBinary(ctx context.Context, src *image.NRGBA, origW, origH, targetBytes int) *scaleCandidate {
+	var bestCand *scaleCandidate
+	loScale, hiScale := 0.05, 1.0
+	for i := 0; i < 10; i++ {
+		if ctx.Err() != nil {
+			break
+		}
+		midScale := (loScale + hiScale) / 2
+		newW, newH := int(float64(origW)*midScale), int(float64(origH)*midScale)
+		if newW < 8 || newH < 8 {
+			loScale = midScale
+			continue
+		}
+		r, err := jpegQualitySearchFast(boxDownsample(src, newW, newH), targetBytes)
+		if err == nil && r != nil && int64(len(r.data)) <= int64(targetBytes) && r.quality >= minJPEGQuality {
+			bestCand = &scaleCandidate{scale: midScale, quality: r.quality, size: len(r.data)}
+			loScale = midScale
+		} else {
+			hiScale = midScale
+		}
+	}
+	return bestCand
+}
+
+func findBestScaleFixed(ctx context.Context, src *image.NRGBA, origW, origH, targetBytes int, best *scaleCandidate) *scaleCandidate {
+	for _, scale := range []float64{0.75, 0.50, 0.375, 0.25} {
+		if ctx.Err() != nil {
+			break
+		}
+		newW, newH := int(float64(origW)*scale), int(float64(origH)*scale)
+		if newW < 8 || newH < 8 {
+			continue
+		}
+		r, err := jpegQualitySearchFast(boxDownsample(src, newW, newH), targetBytes)
+		if err == nil && r != nil && int64(len(r.data)) <= int64(targetBytes) && r.quality >= minJPEGQuality {
+			if best == nil || scale > best.scale {
+				best = &scaleCandidate{scale: scale, quality: r.quality, size: len(r.data)}
+			}
+		}
+	}
+	return best
 }
 
 // ── Strategy 4 ──────────────────────────────────────────────────────────────
 
 func scaleSearch(ctx context.Context, src *image.NRGBA, targetBytes int, format Format) (*sizeResult, error) {
-	origW := src.Bounds().Dx()
-	origH := src.Bounds().Dy()
-
-	lo, hi := 0.05, 1.0
-	bestScale := 0.0
-	bestQ := 0
+	origW, origH := src.Bounds().Dx(), src.Bounds().Dy()
+	lo, hi, bestScale, bestQ := 0.05, 1.0, 0.0, 0
 
 	for i := 0; i < 12; i++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		if ctx.Err() != nil {
+			break
 		}
-
 		mid := (lo + hi) / 2
-		newW := int(float64(origW) * mid)
-		newH := int(float64(origH) * mid)
+		newW, newH := int(float64(origW)*mid), int(float64(origH)*mid)
 		if newW < 1 || newH < 1 {
 			lo = mid
 			continue
 		}
 
-		scaled := boxDownsample(src, newW, newH)
-
-		var fits bool
-		var q int
-		switch format {
-		case JPEG:
-			r, err := jpegQualitySearchFast(scaled, targetBytes)
-			if err == nil && r != nil && int64(len(r.data)) <= int64(targetBytes) && r.quality >= minJPEGQuality {
-				fits = true
-				q = r.quality
-			}
-		case PNG:
-			var buf bytes.Buffer
-			encoder := png.Encoder{CompressionLevel: png.BestCompression}
-			if err := encoder.Encode(&buf, scaled); err != nil {
-				// Encoding failed; treat as doesn't fit.
-				fits = false
-			} else {
-				fits = int64(buf.Len()) <= int64(targetBytes)
-			}
-		}
-
+		fits, q := testScaleFits(boxDownsample(src, newW, newH), targetBytes, format)
 		if fits {
-			bestScale = mid
-			bestQ = q
-			lo = mid
+			bestScale, bestQ, lo = mid, q, mid
 		} else {
 			hi = mid
 		}
@@ -380,38 +308,43 @@ func scaleSearch(ctx context.Context, src *image.NRGBA, targetBytes int, format 
 	if bestScale == 0 {
 		return nil, nil
 	}
+	finalW, finalH := int(float64(origW)*bestScale), int(float64(origH)*bestScale)
+	return executeFinalScaleEncode(src, format, bestScale, bestQ, finalW, finalH, targetBytes)
+}
 
-	finalW := int(float64(origW) * bestScale)
-	finalH := int(float64(origH) * bestScale)
-	scaled := lanczosResize(src, finalW, finalH)
-
-	var buf bytes.Buffer
-	switch format {
-	case JPEG:
-		r, err := jpegQualitySearchFast(scaled, targetBytes)
-		if err != nil || r == nil {
-			if encErr := encodeJPEG(&buf, scaled, bestQ, false); encErr != nil {
-				return nil, fmt.Errorf("fennec: scaleSearch JPEG encode: %w", encErr)
-			}
-		} else {
-			return &sizeResult{
-				data: r.data, format: JPEG, quality: r.quality,
-				ssim:   computeSSIMNRGBA(src, scaled),
-				finalW: finalW, finalH: finalH, img: scaled,
-			}, nil
+func testScaleFits(scaled *image.NRGBA, targetBytes int, format Format) (bool, int) {
+	if format == JPEG {
+		if r, err := jpegQualitySearchFast(scaled, targetBytes); err == nil && r != nil && int64(len(r.data)) <= int64(targetBytes) && r.quality >= minJPEGQuality {
+			return true, r.quality
 		}
-	case PNG:
+		return false, 0
+	}
+	var buf bytes.Buffer
+	encoder := png.Encoder{CompressionLevel: png.BestCompression}
+	if err := encoder.Encode(&buf, scaled); err == nil && int64(buf.Len()) <= int64(targetBytes) {
+		return true, 0
+	}
+	return false, 0
+}
+
+func executeFinalScaleEncode(src *image.NRGBA, format Format, scale float64, bestQ, finalW, finalH, targetBytes int) (*sizeResult, error) {
+	scaled := lanczosResize(src, finalW, finalH)
+	var buf bytes.Buffer
+	if format == JPEG {
+		r, err := jpegQualitySearchFast(scaled, targetBytes)
+		if err == nil && r != nil {
+			return &sizeResult{data: r.data, format: JPEG, quality: r.quality, ssim: computeSSIMNRGBA(src, scaled), finalW: finalW, finalH: finalH, img: scaled}, nil
+		}
+		if err := encodeJPEG(&buf, scaled, bestQ, false); err != nil {
+			return nil, err
+		}
+	} else {
 		encoder := png.Encoder{CompressionLevel: png.BestCompression}
 		if err := encoder.Encode(&buf, scaled); err != nil {
-			return nil, fmt.Errorf("fennec: scaleSearch PNG encode: %w", err)
+			return nil, err
 		}
 	}
-
-	return &sizeResult{
-		data: buf.Bytes(), format: format, quality: bestQ,
-		ssim:   computeSSIMNRGBA(src, scaled),
-		finalW: finalW, finalH: finalH, img: scaled,
-	}, nil
+	return &sizeResult{data: buf.Bytes(), format: format, quality: bestQ, ssim: computeSSIMNRGBA(src, scaled), finalW: finalW, finalH: finalH, img: scaled}, nil
 }
 
 // ── Median-Cut Color Quantizer ──────────────────────────────────────────────

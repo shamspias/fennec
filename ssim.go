@@ -242,9 +242,7 @@ func gaussianKernel(size int, sigma float64) []float64 {
 
 // boxDownsample performs fast box-filter downsampling.
 func boxDownsample(img *image.NRGBA, dstW, dstH int) *image.NRGBA {
-	srcW := img.Bounds().Dx()
-	srcH := img.Bounds().Dy()
-
+	srcW, srcH := img.Bounds().Dx(), img.Bounds().Dy()
 	if srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0 {
 		return image.NewNRGBA(image.Rect(0, 0, 0, 0))
 	}
@@ -279,31 +277,35 @@ func boxDownsample(img *image.NRGBA, dstW, dstH int) *image.NRGBA {
 				sx0 = 0
 			}
 
-			var rSum, gSum, bSum, aSum float64
-			var count float64
-
-			for sy := sy0; sy < sy1; sy++ {
-				for sx := sx0; sx < sx1; sx++ {
-					off := sy*img.Stride + sx*4
-					rSum += float64(img.Pix[off])
-					gSum += float64(img.Pix[off+1])
-					bSum += float64(img.Pix[off+2])
-					aSum += float64(img.Pix[off+3])
-					count++
-				}
-			}
-
-			if count > 0 {
-				inv := 1.0 / count
-				off := dy*dst.Stride + dx*4
-				dst.Pix[off] = clampF(rSum * inv)
-				dst.Pix[off+1] = clampF(gSum * inv)
-				dst.Pix[off+2] = clampF(bSum * inv)
-				dst.Pix[off+3] = clampF(aSum * inv)
-			}
+			averageBoxPixel(img, dst, dx, dy, sx0, sx1, sy0, sy1)
 		}
 	}
 	return dst
+}
+
+func averageBoxPixel(img, dst *image.NRGBA, dx, dy, sx0, sx1, sy0, sy1 int) {
+	var rSum, gSum, bSum, aSum float64
+	var count float64
+
+	for sy := sy0; sy < sy1; sy++ {
+		for sx := sx0; sx < sx1; sx++ {
+			off := sy*img.Stride + sx*4
+			rSum += float64(img.Pix[off])
+			gSum += float64(img.Pix[off+1])
+			bSum += float64(img.Pix[off+2])
+			aSum += float64(img.Pix[off+3])
+			count++
+		}
+	}
+
+	if count > 0 {
+		inv := 1.0 / count
+		off := dy*dst.Stride + dx*4
+		dst.Pix[off] = clampF(rSum * inv)
+		dst.Pix[off+1] = clampF(gSum * inv)
+		dst.Pix[off+2] = clampF(bSum * inv)
+		dst.Pix[off+3] = clampF(aSum * inv)
+	}
 }
 
 // MSSSIM computes Multi-Scale SSIM, which better correlates with
