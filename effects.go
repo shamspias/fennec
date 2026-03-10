@@ -6,7 +6,7 @@ import (
 )
 
 // Sharpen applies adaptive unsharp mask sharpening.
-// The strength parameter should be 0.0\u20131.0 (0.3 is a good default).
+// The strength parameter should be 0.0–1.0 (0.3 is a good default).
 func Sharpen(img *image.NRGBA, strength float64) *image.NRGBA {
 	if strength <= 0 {
 		return img
@@ -112,6 +112,7 @@ func localEdgeStrength(img *image.NRGBA, x, y int) float64 {
 }
 
 // gaussianBlur3x3 applies a fast 3x3 Gaussian blur.
+// Only blurs RGB channels; alpha is copied from the source unchanged.
 func gaussianBlur3x3(img *image.NRGBA) *image.NRGBA {
 	w := img.Bounds().Dx()
 	h := img.Bounds().Dy()
@@ -120,7 +121,7 @@ func gaussianBlur3x3(img *image.NRGBA) *image.NRGBA {
 
 	parallelDo(1, h-1, func(y int) {
 		for x := 1; x < w-1; x++ {
-			for c := 0; c < 4; c++ {
+			for c := 0; c < 3; c++ {
 				var sum float64
 				sum += float64(img.Pix[(y-1)*img.Stride+(x-1)*4+c]) * 1
 				sum += float64(img.Pix[(y-1)*img.Stride+(x)*4+c]) * 2
@@ -133,13 +134,15 @@ func gaussianBlur3x3(img *image.NRGBA) *image.NRGBA {
 				sum += float64(img.Pix[(y+1)*img.Stride+(x+1)*4+c]) * 1
 				dst.Pix[y*dst.Stride+x*4+c] = clampF(sum / 16.0)
 			}
+			// Alpha preserved from source (already copied above).
 		}
 	})
 	return dst
 }
 
 // GaussianBlur applies Gaussian blur with the specified sigma.
-// Uses separable convolution for O(n*r) instead of O(n*r\u00b2) complexity.
+// Uses separable convolution for O(n*r) instead of O(n*r²) complexity.
+// Only blurs RGB channels; alpha is preserved from the source image.
 func GaussianBlur(img *image.NRGBA, sigma float64) *image.NRGBA {
 	if sigma <= 0 {
 		return img
@@ -165,7 +168,7 @@ func GaussianBlur(img *image.NRGBA, sigma float64) *image.NRGBA {
 	tmp := image.NewNRGBA(image.Rect(0, 0, w, h))
 	parallelDo(0, h, func(y int) {
 		for x := 0; x < w; x++ {
-			var r, g, b, a float64
+			var r, g, b float64
 			for k := 0; k < kernelSize; k++ {
 				sx := x + k - radius
 				if sx < 0 {
@@ -178,13 +181,12 @@ func GaussianBlur(img *image.NRGBA, sigma float64) *image.NRGBA {
 				r += float64(img.Pix[off]) * wt
 				g += float64(img.Pix[off+1]) * wt
 				b += float64(img.Pix[off+2]) * wt
-				a += float64(img.Pix[off+3]) * wt
 			}
 			off := y*tmp.Stride + x*4
 			tmp.Pix[off] = clampF(r)
 			tmp.Pix[off+1] = clampF(g)
 			tmp.Pix[off+2] = clampF(b)
-			tmp.Pix[off+3] = clampF(a)
+			tmp.Pix[off+3] = img.Pix[y*img.Stride+x*4+3] // Preserve alpha from source.
 		}
 	})
 
@@ -192,7 +194,7 @@ func GaussianBlur(img *image.NRGBA, sigma float64) *image.NRGBA {
 	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
 	parallelDo(0, w, func(x int) {
 		for y := 0; y < h; y++ {
-			var r, g, b, a float64
+			var r, g, b float64
 			for k := 0; k < kernelSize; k++ {
 				sy := y + k - radius
 				if sy < 0 {
@@ -205,13 +207,12 @@ func GaussianBlur(img *image.NRGBA, sigma float64) *image.NRGBA {
 				r += float64(tmp.Pix[off]) * wt
 				g += float64(tmp.Pix[off+1]) * wt
 				b += float64(tmp.Pix[off+2]) * wt
-				a += float64(tmp.Pix[off+3]) * wt
 			}
 			off := y*dst.Stride + x*4
 			dst.Pix[off] = clampF(r)
 			dst.Pix[off+1] = clampF(g)
 			dst.Pix[off+2] = clampF(b)
-			dst.Pix[off+3] = clampF(a)
+			dst.Pix[off+3] = img.Pix[y*img.Stride+x*4+3] // Preserve alpha from original source.
 		}
 	})
 
