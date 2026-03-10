@@ -3,6 +3,7 @@ package fennec
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -49,7 +50,7 @@ func hitTargetSize(ctx context.Context, original *image.NRGBA, targetBytes int, 
 		return nil, err
 	}
 
-	// Strategy 2: Color quantization \u2192 indexed PNG.
+	// Strategy 2: Color quantization → indexed PNG.
 	if !wantJPEG {
 		if r, err := quantizeStrategy(original, targetBytes); err == nil && r != nil {
 			candidates = append(candidates, r)
@@ -87,15 +88,20 @@ func hitTargetSize(ctx context.Context, original *image.NRGBA, targetBytes int, 
 	}
 
 	if len(candidates) == 0 {
+		// Last-resort fallback: encode at minimum quality / default compression.
 		var buf bytes.Buffer
 		if canUseJPEG || wantJPEG {
-			encodeJPEG(&buf, original, 1, false)
+			if err := encodeJPEG(&buf, original, 1, false); err != nil {
+				return nil, fmt.Errorf("fennec: fallback JPEG encode: %w", err)
+			}
 			return &sizeResult{
 				data: buf.Bytes(), format: JPEG, quality: 1,
 				ssim: computeSSIMNRGBA(original, original), finalW: w, finalH: h, img: original,
 			}, nil
 		}
-		compressPNG(original, &buf, opts)
+		if err := compressPNG(original, &buf, opts); err != nil {
+			return nil, fmt.Errorf("fennec: fallback PNG encode: %w", err)
+		}
 		return &sizeResult{
 			data: buf.Bytes(), format: PNG,
 			ssim: 1.0, finalW: w, finalH: h, img: original,
@@ -135,7 +141,7 @@ func betterFit(candidate, current *sizeResult, target int) bool {
 	return cSize < bSize
 }
 
-// \u2500\u2500 Strategy 1 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Strategy 1 ──────────────────────────────────────────────────────────────
 
 func jpegQualitySearch(src *image.NRGBA, targetBytes int) (*sizeResult, error) {
 	return jpegQualitySearchOpt(src, targetBytes, false)
@@ -198,7 +204,7 @@ func jpegQualitySearchOpt(src *image.NRGBA, targetBytes int, skipSSIM bool) (*si
 	}, nil
 }
 
-// \u2500\u2500 Strategy 2 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Strategy 2 ──────────────────────────────────────────────────────────────
 
 func quantizeStrategy(src *image.NRGBA, targetBytes int) (*sizeResult, error) {
 	w := src.Bounds().Dx()
@@ -228,7 +234,7 @@ func quantizeStrategy(src *image.NRGBA, targetBytes int) (*sizeResult, error) {
 	return nil, nil
 }
 
-// \u2500\u2500 Strategy 3 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Strategy 3 ──────────────────────────────────────────────────────────────
 
 func jpegQualityScaleSearch(ctx context.Context, src *image.NRGBA, targetBytes int) (*sizeResult, error) {
 	origW := src.Bounds().Dx()
@@ -317,7 +323,7 @@ func jpegQualityScaleSearch(ctx context.Context, src *image.NRGBA, targetBytes i
 	return r, nil
 }
 
-// \u2500\u2500 Strategy 4 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Strategy 4 ──────────────────────────────────────────────────────────────
 
 func scaleSearch(ctx context.Context, src *image.NRGBA, targetBytes int, format Format) (*sizeResult, error) {
 	origW := src.Bounds().Dx()
@@ -354,8 +360,12 @@ func scaleSearch(ctx context.Context, src *image.NRGBA, targetBytes int, format 
 		case PNG:
 			var buf bytes.Buffer
 			encoder := png.Encoder{CompressionLevel: png.BestCompression}
-			encoder.Encode(&buf, scaled)
-			fits = int64(buf.Len()) <= int64(targetBytes)
+			if err := encoder.Encode(&buf, scaled); err != nil {
+				// Encoding failed; treat as doesn't fit.
+				fits = false
+			} else {
+				fits = int64(buf.Len()) <= int64(targetBytes)
+			}
 		}
 
 		if fits {
@@ -380,7 +390,9 @@ func scaleSearch(ctx context.Context, src *image.NRGBA, targetBytes int, format 
 	case JPEG:
 		r, err := jpegQualitySearchFast(scaled, targetBytes)
 		if err != nil || r == nil {
-			encodeJPEG(&buf, scaled, bestQ, false)
+			if encErr := encodeJPEG(&buf, scaled, bestQ, false); encErr != nil {
+				return nil, fmt.Errorf("fennec: scaleSearch JPEG encode: %w", encErr)
+			}
 		} else {
 			return &sizeResult{
 				data: r.data, format: JPEG, quality: r.quality,
@@ -390,7 +402,9 @@ func scaleSearch(ctx context.Context, src *image.NRGBA, targetBytes int, format 
 		}
 	case PNG:
 		encoder := png.Encoder{CompressionLevel: png.BestCompression}
-		encoder.Encode(&buf, scaled)
+		if err := encoder.Encode(&buf, scaled); err != nil {
+			return nil, fmt.Errorf("fennec: scaleSearch PNG encode: %w", err)
+		}
 	}
 
 	return &sizeResult{
@@ -400,7 +414,7 @@ func scaleSearch(ctx context.Context, src *image.NRGBA, targetBytes int, format 
 	}, nil
 }
 
-// \u2500\u2500 Median-Cut Color Quantizer \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Median-Cut Color Quantizer ──────────────────────────────────────────────
 
 type colorBox struct {
 	pixels     [][3]uint8
@@ -597,7 +611,7 @@ func palettedToNRGBA(p *image.Paletted) *image.NRGBA {
 	return dst
 }
 
-// \u2500\u2500 Helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 func copyBytes(src []byte) []byte {
 	dst := make([]byte, len(src))
