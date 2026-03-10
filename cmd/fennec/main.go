@@ -50,143 +50,137 @@ func parseSize(s string) (int, error) {
 	return val, nil
 }
 
+type appConfig struct {
+	quality, format, targetSize string
+	maxWidth, maxHeight         int
+	ssimTarget                  float64
+	noOrient, analyze, verbose  bool
+	input, output               string
+}
+
 func main() {
-	quality := flag.String("quality", "balanced", "Quality preset: lossless, ultra, high, balanced, aggressive, maximum")
-	format := flag.String("format", "auto", "Output format: auto, jpeg, png")
-	maxWidth := flag.Int("max-width", 0, "Maximum output width (0 = no constraint)")
-	maxHeight := flag.Int("max-height", 0, "Maximum output height (0 = no constraint)")
-	targetSize := flag.String("target-size", "", "Target file size (e.g. 100KB, 2MB, or raw bytes)")
-	ssimTarget := flag.Float64("ssim", 0, "Custom SSIM target (0.0-1.0, overrides quality preset)")
-	noOrient := flag.Bool("no-orient", false, "Don't auto-rotate based on EXIF orientation")
-	analyze := flag.Bool("analyze", false, "Analyze image without compressing")
-	verbose := flag.Bool("v", false, "Verbose output")
+	cfg := parseFlags()
+	if cfg.analyze {
+		runAnalyze(cfg.input)
+		return
+	}
+	runCompression(cfg)
+}
+
+func parseFlags() appConfig {
+	cfg := appConfig{}
+	flag.StringVar(&cfg.quality, "quality", "balanced", "Quality preset")
+	flag.StringVar(&cfg.format, "format", "auto", "Output format")
+	flag.IntVar(&cfg.maxWidth, "max-width", 0, "Max width")
+	flag.IntVar(&cfg.maxHeight, "max-height", 0, "Max height")
+	flag.StringVar(&cfg.targetSize, "target-size", "", "Target file size")
+	flag.Float64Var(&cfg.ssimTarget, "ssim", 0, "Custom SSIM target")
+	flag.BoolVar(&cfg.noOrient, "no-orient", false, "Don't auto-rotate")
+	flag.BoolVar(&cfg.analyze, "analyze", false, "Analyze image")
+	flag.BoolVar(&cfg.verbose, "v", false, "Verbose output")
 	flag.Parse()
 
 	args := flag.Args()
 	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: fennec [options] <input> [output]\n")
-		fmt.Fprintf(os.Stderr, "  If output is omitted, uses <input>_fennec.<ext>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: fennec [options] <input> [output]\n\n")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
-	input := args[0]
+	cfg.input = args[0]
+	if len(args) >= 2 {
+		cfg.output = args[1]
+	} else {
+		base := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(cfg.input, ".jpg"), ".jpeg"), ".png")
+		cfg.output = base + "_fennec.jpg"
+	}
+	return cfg
+}
 
-	if *analyze {
-		img, err := fennec.Open(input)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+func runAnalyze(input string) {
+	img, err := fennec.Open(input)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	stats := fennec.Analyze(img)
+	fmt.Printf("Image Analysis: %s\n", input)
+	// Fixed the Printf arguments to include stats.UniqueColors
+	fmt.Printf("  Dimensions:     %d x %d\n  Has Alpha:      %v\n  Grayscale:      %v\n  Unique Colors:  %d\n", stats.Width, stats.Height, stats.HasAlpha, stats.IsGrayscale, stats.UniqueColors)
+	fmt.Printf("  Entropy:        %.2f bits\n  Edge Density:   %.2f%%\n", stats.Entropy, stats.EdgeDensity*100)
+	fmt.Printf("  Recommended:    %s / %s\n", stats.RecommendedFormat, stats.RecommendedQuality)
+}
+
+func runCompression(cfg appConfig) {
+	opts := buildOptions(cfg)
+	start := time.Now()
+	result, err := fennec.CompressFile(context.Background(), cfg.input, cfg.output, opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	elapsed := time.Since(start).Round(time.Millisecond)
+
+	if cfg.verbose {
+		fmt.Printf("%v\n  Time: %v\n", result, elapsed)
+	} else {
+		fmt.Printf("%s -> %s | %s | SSIM: %.4f | Saved: %.1f%% | %v\n", cfg.input, cfg.output, result.Format, result.SSIM, result.SavingsPercent, elapsed)
+	}
+}
+
+func buildOptions(cfg appConfig) fennec.Options {
+	opts := fennec.DefaultOptions()
+	opts.MaxWidth, opts.MaxHeight = cfg.maxWidth, cfg.maxHeight
+	if cfg.noOrient {
+		opts.AutoOrient = false
+	}
+	if cfg.ssimTarget > 0 {
+		if cfg.ssimTarget > 1.0 {
 			os.Exit(1)
 		}
-		stats := fennec.Analyze(img)
-		fmt.Printf("Image Analysis: %s\n", input)
-		fmt.Printf("  Dimensions:     %d x %d\n", stats.Width, stats.Height)
-		fmt.Printf("  Has Alpha:      %v\n", stats.HasAlpha)
-		fmt.Printf("  Grayscale:      %v\n", stats.IsGrayscale)
-		fmt.Printf("  Unique Colors:  %d\n", stats.UniqueColors)
-		fmt.Printf("  Entropy:        %.2f bits\n", stats.Entropy)
-		fmt.Printf("  Edge Density:   %.2f%%\n", stats.EdgeDensity*100)
-		fmt.Printf("  Mean Bright:    %.1f\n", stats.MeanBrightness)
-		fmt.Printf("  Contrast:       %.1f\n", stats.Contrast)
-		fmt.Printf("  Recommended:    %s / %s\n", stats.RecommendedFormat, stats.RecommendedQuality)
-		fmt.Printf("  Est. Compress:  %.1fx\n", stats.EstimatedCompression)
-		return
+		opts.TargetSSIM = cfg.ssimTarget
 	}
-
-	output := ""
-	if len(args) >= 2 {
-		output = args[1]
-	} else {
-		ext := ".jpg"
-		base := strings.TrimSuffix(input, ".jpg")
-		base = strings.TrimSuffix(base, ".jpeg")
-		base = strings.TrimSuffix(base, ".png")
-		output = base + "_fennec" + ext
-	}
-
-	opts := fennec.DefaultOptions()
-	opts.MaxWidth = *maxWidth
-	opts.MaxHeight = *maxHeight
-
-	// Parse target size (supports human-readable strings).
-	if *targetSize != "" {
-		ts, err := parseSize(*targetSize)
+	if cfg.targetSize != "" {
+		ts, err := parseSize(cfg.targetSize)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Invalid target-size: %v\n", err)
 			os.Exit(1)
 		}
 		opts.TargetSize = ts
 	}
-
-	// Apply custom SSIM target (overrides quality preset).
-	if *ssimTarget > 0 {
-		if *ssimTarget < 0 || *ssimTarget > 1.0 {
-			fmt.Fprintf(os.Stderr, "Invalid SSIM target: must be between 0.0 and 1.0\n")
-			os.Exit(1)
-		}
-		opts.TargetSSIM = *ssimTarget
-	}
-
-	// Apply no-orient flag.
-	if *noOrient {
-		opts.AutoOrient = false
-	}
-
-	switch strings.ToLower(*quality) {
-	case "lossless":
-		opts.Quality = fennec.Lossless
-	case "ultra":
-		opts.Quality = fennec.Ultra
-	case "high":
-		opts.Quality = fennec.High
-	case "balanced":
-		opts.Quality = fennec.Balanced
-	case "aggressive":
-		opts.Quality = fennec.Aggressive
-	case "maximum", "max":
-		opts.Quality = fennec.Maximum
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown quality: %s\n", *quality)
-		os.Exit(1)
-	}
-
-	switch strings.ToLower(*format) {
-	case "auto":
-		opts.Format = fennec.Auto
-	case "jpeg", "jpg":
-		opts.Format = fennec.JPEG
-	case "png":
-		opts.Format = fennec.PNG
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown format: %s\n", *format)
-		os.Exit(1)
-	}
-
-	if *verbose {
+	opts.Quality, opts.Format = parseQuality(cfg.quality), parseFormat(cfg.format)
+	if cfg.verbose {
 		opts.OnProgress = func(stage fennec.ProgressStage, pct float64) error {
 			fmt.Fprintf(os.Stderr, "  [%s] %.0f%%\n", stage, pct*100)
 			return nil
 		}
 	}
+	return opts
+}
 
-	start := time.Now()
-	ctx := context.Background()
-
-	result, err := fennec.CompressFile(ctx, input, output, opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+func parseQuality(q string) fennec.Quality {
+	switch strings.ToLower(q) {
+	case "lossless":
+		return fennec.Lossless
+	case "ultra":
+		return fennec.Ultra
+	case "high":
+		return fennec.High
+	case "aggressive":
+		return fennec.Aggressive
+	case "maximum", "max":
+		return fennec.Maximum
+	default:
+		return fennec.Balanced
 	}
+}
 
-	elapsed := time.Since(start)
-
-	if *verbose {
-		fmt.Println(result)
-		fmt.Printf("  Time: %v\n", elapsed.Round(time.Millisecond))
-	} else {
-		fmt.Printf("%s -> %s | %s | SSIM: %.4f | Saved: %.1f%% | %v\n",
-			input, output, result.Format,
-			result.SSIM, result.SavingsPercent,
-			elapsed.Round(time.Millisecond))
+func parseFormat(f string) fennec.Format {
+	switch strings.ToLower(f) {
+	case "jpeg", "jpg":
+		return fennec.JPEG
+	case "png":
+		return fennec.PNG
+	default:
+		return fennec.Auto
 	}
 }
