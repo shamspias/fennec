@@ -5,18 +5,59 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/shamspias/fennec"
 )
 
+// parseSize parses a human-readable size string like "100KB", "2MB", or raw bytes "51200".
+func parseSize(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" {
+		return 0, nil
+	}
+
+	upper := strings.ToUpper(s)
+
+	multipliers := []struct {
+		suffix string
+		mult   int
+	}{
+		{"GB", 1024 * 1024 * 1024},
+		{"MB", 1024 * 1024},
+		{"KB", 1024},
+		{"B", 1},
+	}
+
+	for _, m := range multipliers {
+		if strings.HasSuffix(upper, m.suffix) {
+			numStr := strings.TrimSpace(s[:len(s)-len(m.suffix)])
+			val, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid size %q: %w", s, err)
+			}
+			return int(val * float64(m.mult)), nil
+		}
+	}
+
+	// Fallback: try parsing as raw integer (bytes).
+	val, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size %q: expected number or value like 100KB, 2MB", s)
+	}
+	return val, nil
+}
+
 func main() {
 	quality := flag.String("quality", "balanced", "Quality preset: lossless, ultra, high, balanced, aggressive, maximum")
 	format := flag.String("format", "auto", "Output format: auto, jpeg, png")
 	maxWidth := flag.Int("max-width", 0, "Maximum output width (0 = no constraint)")
 	maxHeight := flag.Int("max-height", 0, "Maximum output height (0 = no constraint)")
-	targetSize := flag.Int("target-size", 0, "Target file size in bytes (0 = disabled)")
+	targetSize := flag.String("target-size", "", "Target file size (e.g. 100KB, 2MB, or raw bytes)")
+	ssimTarget := flag.Float64("ssim", 0, "Custom SSIM target (0.0-1.0, overrides quality preset)")
+	noOrient := flag.Bool("no-orient", false, "Don't auto-rotate based on EXIF orientation")
 	analyze := flag.Bool("analyze", false, "Analyze image without compressing")
 	verbose := flag.Bool("v", false, "Verbose output")
 	flag.Parse()
@@ -24,7 +65,7 @@ func main() {
 	args := flag.Args()
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: fennec [options] <input> [output]\n")
-		fmt.Fprintf(os.Stderr, "  If output is omitted, uses <input>_fennec.<ext>\n")
+		fmt.Fprintf(os.Stderr, "  If output is omitted, uses <input>_fennec.<ext>\n\n")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -66,7 +107,30 @@ func main() {
 	opts := fennec.DefaultOptions()
 	opts.MaxWidth = *maxWidth
 	opts.MaxHeight = *maxHeight
-	opts.TargetSize = *targetSize
+
+	// Parse target size (supports human-readable strings).
+	if *targetSize != "" {
+		ts, err := parseSize(*targetSize)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid target-size: %v\n", err)
+			os.Exit(1)
+		}
+		opts.TargetSize = ts
+	}
+
+	// Apply custom SSIM target (overrides quality preset).
+	if *ssimTarget > 0 {
+		if *ssimTarget < 0 || *ssimTarget > 1.0 {
+			fmt.Fprintf(os.Stderr, "Invalid SSIM target: must be between 0.0 and 1.0\n")
+			os.Exit(1)
+		}
+		opts.TargetSSIM = *ssimTarget
+	}
+
+	// Apply no-orient flag.
+	if *noOrient {
+		opts.AutoOrient = false
+	}
 
 	switch strings.ToLower(*quality) {
 	case "lossless":
