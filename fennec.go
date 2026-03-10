@@ -108,35 +108,25 @@ func compressImageInternal(ctx context.Context, img image.Image, orient Orientat
 	if img == nil {
 		return nil, ErrNilImage
 	}
-
 	bounds := img.Bounds()
 	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
 		return nil, ErrEmptyImage
 	}
 
-	result := &Result{
-		OriginalDimensions: image.Pt(bounds.Dx(), bounds.Dy()),
-	}
-
-	// Step 1: Convert to NRGBA for uniform processing.
+	result := &Result{OriginalDimensions: image.Pt(bounds.Dx(), bounds.Dy())}
 	src := toNRGBA(img)
 
-	// Step 2: Apply EXIF orientation if requested.
 	if opts.AutoOrient && orient > OrientNormal {
 		src = ApplyOrientation(src, orient)
-		// Update original dimensions to post-orientation size.
 		result.OriginalDimensions = image.Pt(src.Bounds().Dx(), src.Bounds().Dy())
 	}
-
 	if err := opts.reportProgress(ctx, StageResizing, 0.1); err != nil {
 		return nil, err
 	}
 
-	// Step 3: Smart resize if dimensions are constrained.
 	if opts.MaxWidth > 0 || opts.MaxHeight > 0 {
 		src = smartResize(src, opts.MaxWidth, opts.MaxHeight)
 	}
-
 	result.Image = src
 	result.FinalDimensions = image.Pt(src.Bounds().Dx(), src.Bounds().Dy())
 
@@ -144,42 +134,42 @@ func compressImageInternal(ctx context.Context, img image.Image, orient Orientat
 		return nil, err
 	}
 
-	// ── Target Size Mode ────────────────────────────────────────────────
 	if opts.TargetSize > 0 {
-		sr, err := hitTargetSize(ctx, src, opts.TargetSize, opts)
-		if err != nil {
-			return nil, fmt.Errorf("fennec: target-size compression: %w", err)
-		}
-		result.CompressedData = sr.data
-		result.Format = sr.format
-		result.JPEGQuality = sr.quality
-		result.SSIM = sr.ssim
-		result.FinalDimensions = image.Pt(sr.finalW, sr.finalH)
-		if sr.img != nil {
-			result.Image = sr.img
-		}
-		result.CompressedSize = int64(len(sr.data))
-		result.computeStats()
-		return result, nil
+		return handleTargetSizeMode(ctx, src, opts, result)
+	}
+	return handleStandardMode(ctx, src, opts, result)
+}
+
+func handleTargetSizeMode(ctx context.Context, src *image.NRGBA, opts Options, result *Result) (*Result, error) {
+	sr, err := hitTargetSize(ctx, src, opts.TargetSize, opts)
+	if err != nil {
+		return nil, fmt.Errorf("fennec: target-size compression: %w", err)
 	}
 
-	// ── Standard Mode: SSIM-Guided Compression ──────────────────────────
+	result.CompressedData = sr.data
+	result.Format = sr.format
+	result.JPEGQuality = sr.quality
+	result.SSIM = sr.ssim
+	result.FinalDimensions = image.Pt(sr.finalW, sr.finalH)
+	if sr.img != nil {
+		result.Image = sr.img
+	}
+	result.CompressedSize = int64(len(sr.data))
+	result.computeStats()
+	return result, nil
+}
+
+func handleStandardMode(ctx context.Context, src *image.NRGBA, opts Options, result *Result) (*Result, error) {
 	if opts.Format == Auto {
 		opts.Format = analyzeFormat(src)
 	}
 	result.Format = opts.Format
-
-	targetSSIM := opts.Quality.targetSSIM()
-	if opts.TargetSSIM > 0 && opts.TargetSSIM <= 1.0 {
-		targetSSIM = opts.TargetSSIM
-	}
 
 	if err := opts.reportProgress(ctx, StageOptimizing, 0.3); err != nil {
 		return nil, err
 	}
 
 	var compressed encodingBuffer
-
 	switch opts.Format {
 	case PNG:
 		if err := compressPNG(src, &compressed, opts); err != nil {
@@ -187,13 +177,16 @@ func compressImageInternal(ctx context.Context, img image.Image, orient Orientat
 		}
 		result.SSIM = 1.0
 	case JPEG:
-		quality, ssim, cachedData, err := compressJPEGOptimal(src, &compressed, targetSSIM, opts)
+		target := opts.Quality.targetSSIM()
+		if opts.TargetSSIM > 0 && opts.TargetSSIM <= 1.0 {
+			target = opts.TargetSSIM
+		}
+
+		q, ssim, cachedData, err := compressJPEGOptimal(src, &compressed, target, opts)
 		if err != nil {
 			return nil, fmt.Errorf("fennec: JPEG compression: %w", err)
 		}
-		result.JPEGQuality = quality
-		result.SSIM = ssim
-		// Use cached data from binary search if available (avoids double-encode).
+		result.JPEGQuality, result.SSIM = q, ssim
 		if cachedData != nil {
 			compressed.Reset()
 			compressed.Write(cachedData)
@@ -205,11 +198,9 @@ func compressImageInternal(ctx context.Context, img image.Image, orient Orientat
 	if err := opts.reportProgress(ctx, StageEncoding, 0.9); err != nil {
 		return nil, err
 	}
-
 	result.CompressedData = compressed.Bytes()
 	result.CompressedSize = int64(compressed.Len())
 	result.computeStats()
-
 	return result, nil
 }
 
