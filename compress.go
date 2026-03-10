@@ -19,6 +19,12 @@ import (
 // The fourth return value is the cached JPEG bytes from the binary search.
 // This avoids the double-encode bug where the final output would be re-encoded.
 func compressJPEGOptimal(src *image.NRGBA, w io.Writer, targetSSIM float64, opts Options) (int, float64, []byte, error) {
+	// Guard: if target is 1.0 (Lossless) and format is JPEG, clamp to 0.999
+	// since JPEG is inherently lossy and SSIM=1.0 is unreachable.
+	if targetSSIM >= 1.0 {
+		targetSSIM = 0.999
+	}
+
 	// Binary search bounds.
 	lo, hi := 1, 100
 	bestQuality := hi
@@ -56,13 +62,13 @@ func compressJPEGOptimal(src *image.NRGBA, w io.Writer, targetSSIM float64, opts
 		ssim := SSIMFast(src, decodedNRGBA)
 
 		if ssim >= targetSSIM {
-			// Quality is sufficient \u2014 cache this result and try lower quality.
+			// Quality is sufficient — cache this result and try lower quality.
 			bestQuality = mid
 			bestSSIM = ssim
 			bestData = copyBytes(buf.Bytes())
 			hi = mid - 1
 		} else {
-			// Quality too low \u2014 increase quality.
+			// Quality too low — increase quality.
 			lo = mid + 1
 		}
 	}
@@ -80,45 +86,6 @@ func compressJPEGOptimal(src *image.NRGBA, w io.Writer, targetSSIM float64, opts
 	return bestQuality, bestSSIM, nil, nil
 }
 
-// compressJPEGToSize finds the JPEG quality that produces output closest to targetSize.
-func compressJPEGToSize(src *image.NRGBA, w io.Writer, targetSize int) (int, float64, error) {
-	lo, hi := 1, 100
-	bestQuality := 50
-	bestDiff := int64(1<<63 - 1)
-	bestSSIM := 0.0
-
-	for lo <= hi {
-		mid := (lo + hi) / 2
-
-		var buf bytes.Buffer
-		if err := encodeJPEG(&buf, src, mid, true); err != nil {
-			return 0, 0, err
-		}
-
-		size := int64(buf.Len())
-		diff := abs64(size - int64(targetSize))
-
-		if diff < bestDiff {
-			bestDiff = diff
-			bestQuality = mid
-
-			decoded, err := jpeg.Decode(bytes.NewReader(buf.Bytes()))
-			if err != nil {
-				return 0, 0, err
-			}
-			bestSSIM = SSIMFast(src, toNRGBARef(decoded))
-		}
-
-		if size > int64(targetSize) {
-			hi = mid - 1
-		} else {
-			lo = mid + 1
-		}
-	}
-
-	return bestQuality, bestSSIM, encodeJPEG(w, src, bestQuality, true)
-}
-
 // compressPNG applies PNG-specific optimizations.
 func compressPNG(img *image.NRGBA, w io.Writer, opts Options) error {
 	// Check if we can reduce to a palette (indexed color).
@@ -128,7 +95,7 @@ func compressPNG(img *image.NRGBA, w io.Writer, opts Options) error {
 		return encoder.Encode(w, paletted)
 	}
 
-	// Check if image is grayscale \u2014 use Gray format for ~3\u00d7 savings.
+	// Check if image is grayscale — use Gray format for ~3× savings.
 	if isGrayscale(img) {
 		gray := toGray(img)
 		encoder := png.Encoder{CompressionLevel: png.BestCompression}
